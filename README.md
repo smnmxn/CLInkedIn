@@ -22,7 +22,13 @@ clinkedin connect https://www.linkedin.com/in/<slug>/          # prompts Y/N
 clinkedin connect https://www.linkedin.com/in/<slug>/ --message "Hi, met at the conference"
 clinkedin connect https://www.linkedin.com/in/<slug>/ --dry-run
 clinkedin connect https://www.linkedin.com/in/<slug>/ --yes    # skip the prompt
+
+clinkedin search people "product manager fintech"              # Name · Headline · Location · URL
+clinkedin search people "designer" --network F,S --limit 50    # 1st + 2nd-degree only
+clinkedin search people "founder" --json --output founders.json
 ```
+
+`--network` accepts a comma-separated subset of `F` (1st), `S` (2nd), `O` (3rd+); omit to search all. `--limit` defaults to 25. Each result includes a `url` field (URN-form, e.g. `https://www.linkedin.com/in/ACoAA…/`) — LinkedIn redirects this to the canonical profile in the browser.
 
 The first run asks macOS Keychain for access to Chrome's cookie store — click **Always Allow**.
 
@@ -69,6 +75,7 @@ Claude-Code-Skills format (each is a directory with a `SKILL.md`):
 
 - [`skills/linkedin_send_connection_request/`](skills/linkedin_send_connection_request/SKILL.md) — send a connection request to one profile (MCP tool + CLI).
 - [`skills/linkedin_list_connections/`](skills/linkedin_list_connections/SKILL.md) — list / export the user's 1st-degree connections (CLI, read-only).
+- [`skills/linkedin_search_people/`](skills/linkedin_search_people/SKILL.md) — search LinkedIn for people by keywords / network depth (CLI, read-only).
 
 Point your agent framework at this `skills/` directory (or symlink the
 individual skill dirs into its skills root) and the host will trigger them

@@ -11,6 +11,9 @@ from .auth import NotAuthenticatedError, login, login_from_chrome, login_with_co
 from .client import make_client
 from .connections import fetch_connections, format_json, format_table
 from .invite import InviteError, parse_profile_url, send_invite
+from .search import format_json as search_format_json
+from .search import format_table as search_format_table
+from .search import search_people
 
 
 def _cmd_login(args: argparse.Namespace) -> int:
@@ -58,6 +61,37 @@ def _cmd_connections(args: argparse.Namespace) -> int:
         return 1
 
     rendered = format_json(conns) if args.json else format_table(conns)
+    if args.output:
+        Path(args.output).write_text(rendered)
+    else:
+        print(rendered)
+    return 0
+
+
+def _cmd_search_people(args: argparse.Namespace) -> int:
+    network: list[str] | None = None
+    if args.network:
+        network = [n.strip().upper() for n in args.network.split(",") if n.strip()]
+        valid = {"F", "S", "O"}
+        bad = [n for n in network if n not in valid]
+        if bad:
+            print(f"Invalid --network values: {bad}. Use F, S, O.", file=sys.stderr)
+            return 2
+
+    try:
+        client = make_client()
+    except NotAuthenticatedError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    try:
+        results = search_people(client, args.query, network_depths=network, limit=args.limit)
+    except Exception as e:
+        print(f"Search failed: {e}", file=sys.stderr)
+        print("If this looks like a session error, run 'clinkedin login' again.", file=sys.stderr)
+        return 1
+
+    rendered = search_format_json(results) if args.json else search_format_table(results)
     if args.output:
         Path(args.output).write_text(rendered)
     else:
@@ -126,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
             "  clinkedin connect https://www.linkedin.com/in/<slug>/\n"
             "  clinkedin connect https://www.linkedin.com/in/<slug>/ \\\n"
             "      --message 'Hi, met at the conference' --yes\n"
+            "  clinkedin search people 'product manager fintech'\n"
+            "  clinkedin search people 'designer' --network F,S --limit 50\n"
             "  clinkedin login --cookie AQEDAR...        paste li_at if Chrome isn't available\n"
             "\n"
             "First run: sign in to linkedin.com in Chrome; the CLI will reuse that session.\n"
@@ -163,6 +199,21 @@ def main(argv: list[str] | None = None) -> int:
     co.add_argument("--dry-run", action="store_true", help="Parse the URL and exit without sending")
     co.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
 
+    s = sub.add_parser("search", help="Search LinkedIn")
+    s_sub = s.add_subparsers(dest="search_kind", title="search kinds")
+
+    sp = s_sub.add_parser("people", help="Search for people")
+    sp.add_argument("query", help="Keywords to search for")
+    sp.add_argument(
+        "--network",
+        type=str,
+        default=None,
+        help="Comma-separated network depths: F (1st), S (2nd), O (3rd+). Default: all.",
+    )
+    sp.add_argument("--limit", type=int, default=25, help="Max number of results (default 25)")
+    sp.add_argument("--json", action="store_true", help="Output raw JSON")
+    sp.add_argument("--output", type=str, default=None, help="Write to FILE instead of stdout")
+
     args = parser.parse_args(argv)
 
     if args.command is None:
@@ -174,6 +225,11 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_connections(args)
     if args.command == "connect":
         return _cmd_connect(args)
+    if args.command == "search":
+        if args.search_kind == "people":
+            return _cmd_search_people(args)
+        s.print_help()
+        return 0
     parser.error(f"unknown command: {args.command}")
     return 2
 
