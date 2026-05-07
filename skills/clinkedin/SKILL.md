@@ -40,11 +40,16 @@ JSON fields: `name`, `jobtitle`, `location`, `company`, `url`. 1st-degree only. 
 ### List who the user follows
 
 ```sh
-clinkedin following                                  # everyone they follow
+clinkedin following                                       # everyone they follow (paginated, ~25 calls for 1000)
 clinkedin following --limit 50 --json --output following.json
+clinkedin following --limit 50 --offset 50                # next page (items 50–99)
 ```
 
-Per-row JSON: `name`, `kind` (`member` | `company`), `public_id`, `headline`, `urn`.
+Per-row JSON: `name`, `kind` (`member` | `company`), `public_id`, `headline`, `url`, `urn`. The `url` is URN-form (`https://www.linkedin.com/in/ACoA…/`); LinkedIn redirects it to the canonical vanity profile in a browser. Same convention as `clinkedin search people` results.
+
+**LinkedIn caps `following` at the first 1000 results** even when the user follows more (LinkedIn UI shows a `totalResultCount` higher than the actual paging total). Nothing we can do about that; if the user has 2000 follows you'll only see the most recent 1000.
+
+Implemented via the Curation Hub GraphQL endpoint (`/voyager/api/graphql?queryId=voyagerSearchDashClusters...`); the legacy REST `/feed/dash/followingStates` endpoint LinkedIn used to expose now returns HTTP 400 — we re-captured the modern queryId from a real LinkedIn web session.
 
 ### View a single profile
 
@@ -131,6 +136,7 @@ There is **no undo** — re-connecting requires a new invite. Always get explici
 
 ```sh
 clinkedin follow https://www.linkedin.com/in/<slug>/             # follow a person (no connection request)
+clinkedin follow https://www.linkedin.com/in/ACoA…/              # ACoA URN form also accepted (e.g. from `following` output)
 clinkedin follow https://www.linkedin.com/company/<slug>/        # follow a company
 clinkedin unfollow https://www.linkedin.com/in/<slug>/           # unfollow a person
 clinkedin unfollow https://www.linkedin.com/company/<slug>/      # unfollow a company
@@ -139,6 +145,8 @@ clinkedin follow <url> --yes                                     # skip the Y/N 
 ```
 
 Follow is non-destructive but visible to the followed person/company. Less risky than `connect` but still ask first.
+
+**Cost:** member follow/unfollow now costs **two Voyager calls** (one Dash profile lookup to resolve the numeric member ID, then one POST to LinkedIn's modern SDUI follow-state endpoint). When batching across many profiles, space the calls out — bursts of >5/sec can throttle the session.
 
 ## Rate limits and session fragility
 
@@ -166,9 +174,10 @@ Follow is non-destructive but visible to the followed person/company. Less risky
 ## Troubleshooting
 
 - **`HTTP 410` errors** — LinkedIn deprecated the legacy `/profileView` endpoint. The CLI has been migrated to the modern Dash endpoint; if you still see 410s, the install is stale (`uv tool install --editable` again).
+- **`HTTP 400` on `following`, `follow`, or `unfollow`** — usually means LinkedIn rotated the GraphQL `queryId` hash baked into the bundle (for `following`) or moved the SDUI endpoint shape (for `follow`/`unfollow`). Both have hardcoded values that need re-capturing from a real LinkedIn web session via DevTools (Network tab → trigger the action → Copy as cURL → share). One commit usually fixes it.
 - **`HTTP 401` / "session may be rate-limited"** — stop, do not retry. The session is locked for 30 minutes to several hours. Tell the user to pause and try again later.
 - **`view --posts` returns empty after `--since`** — the user's posts may genuinely all be older than the window. Try a wider `--since` or omit it. If `--since 1y` is also empty, the user may have no posts visible to your session (1st-degree only / privacy settings).
-- **`view --posts --debug`** — prints the raw response from `/identity/profileUpdatesV2`. Use only when investigating an unexpected error; each invocation is one more Voyager call against a fragile session.
+- **Debug flags** — `view --posts --debug` dumps the raw `/identity/profileUpdatesV2` response; `following --debug` dumps the raw GraphQL Curation Hub response. Use only when investigating an unexpected error; each invocation is one more Voyager call against a fragile session.
 
 ## Help
 

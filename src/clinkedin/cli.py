@@ -13,6 +13,7 @@ from .connections import fetch_connections, format_json, format_table
 from .disconnect import DisconnectError, remove_connection
 from .follow import (
     FollowError,
+    debug_following,
     follow_company,
     follow_member,
     list_following,
@@ -317,6 +318,18 @@ def _cmd_following(args: argparse.Namespace) -> int:
         print(str(e), file=sys.stderr)
         return 1
 
+    if args.debug:
+        try:
+            info = debug_following(client, count=args.limit or 5)
+        except Exception as e:
+            import traceback
+            print(f"Debug probe failed: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return 1
+        import json as _json
+        print(_json.dumps(info, indent=2, default=str))
+        return 0
+
     try:
         items = list_following(client, limit=args.limit, offset=args.offset)
     except FollowError as e:
@@ -498,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
     fg.add_argument("--limit", type=int, default=None, help="Max number of results")
     fg.add_argument("--offset", type=int, default=0, help="Skip the first N results (for pagination)")
     fg.add_argument("--output", type=str, default=None, help="Write to FILE instead of stdout")
+    fg.add_argument("--debug", action="store_true", help="Probe candidate Voyager endpoints and dump raw responses")
 
     v = sub.add_parser("view", help="View a LinkedIn profile (name, headline, experience, education)")
     v.add_argument("url", help="LinkedIn profile URL (https://www.linkedin.com/in/<slug>/)")

@@ -16,6 +16,8 @@ from clinkedin.follow import (
 
 
 URN = "ACoAACX1hoMBvWqTY21JGe0z91mnmjmLy9Wen4w"
+NUMERIC_ID = "987654321"
+VANITY = "alex-fairweather"
 COMPANY_ID = "1337420"
 
 
@@ -47,7 +49,15 @@ class _FakeClient:
         self._post_q = list(post_responses or [])
         self._default_fetch = default_fetch or _FakeResponse(
             200,
-            payload={"elements": [{"entityUrn": f"urn:li:fsd_profile:{URN}"}]},
+            payload={
+                "elements": [
+                    {
+                        "entityUrn": f"urn:li:fsd_profile:{URN}",
+                        "objectUrn": f"urn:li:member:{NUMERIC_ID}",
+                        "publicIdentifier": VANITY,
+                    }
+                ]
+            },
         )
         self._default_post = default_post or _FakeResponse(200)
         self.fetch_calls: list[dict] = []
@@ -102,27 +112,44 @@ def test_parse_follow_url_rejects(url):
 # ---------- follow_member / unfollow_member ----------
 
 
-def test_follow_member_posts_followByEntityUrn():
+def test_follow_member_posts_sdui_follow_state():
     client = _FakeClient()
     follow_member(client, "simon-foo")
 
+    # 1. Dash profile lookup to resolve numeric member ID.
+    assert len(client.fetch_calls) == 1
+    assert "voyagerIdentityDashProfiles" in client.fetch_calls[0]["uri"]
+    assert "memberIdentity=simon-foo" in client.fetch_calls[0]["uri"]
+
+    # 2. SDUI follow-state POST.
     assert len(client.post_calls) == 1
     call = client.post_calls[0]
-    assert call["uri"] == "/feed/follows?action=followByEntityUrn"
-    assert call["headers"]["accept"].startswith(
-        "application/vnd.linkedin.normalized+json"
+    assert call["uri"].startswith("/flagship-web/rsc-action/actions/server-request")
+    assert "addaUpdateFollowState" in call["uri"]
+    assert call["base_request"] is True
+    assert call["headers"]["content-type"] == "application/json"
+
+    body = json.loads(call["data"])
+    payload = body["serverRequest"]["requestedArguments"]["payload"]
+    assert payload["followStateType"] == "FollowStateType_FOLLOW"
+    assert payload["memberUrn"] == {"memberId": NUMERIC_ID}
+    assert (
+        payload["followStateBinding"]["key"]
+        == f"urn:li:fsd_followingState:urn:li:member:{NUMERIC_ID}"
     )
-    assert json.loads(call["data"]) == {"urn": f"urn:li:fs_followingInfo:{URN}"}
 
 
-def test_unfollow_member_posts_unfollowByEntityUrn():
+def test_unfollow_member_posts_sdui_unfollow_state():
     client = _FakeClient()
     unfollow_member(client, "simon-foo")
 
-    assert client.post_calls[0]["uri"] == "/feed/follows?action=unfollowByEntityUrn"
-    assert json.loads(client.post_calls[0]["data"]) == {
-        "urn": f"urn:li:fs_followingInfo:{URN}"
-    }
+    assert len(client.post_calls) == 1
+    call = client.post_calls[0]
+    assert "addaUpdateFollowState" in call["uri"]
+    body = json.loads(call["data"])
+    payload = body["serverRequest"]["requestedArguments"]["payload"]
+    assert payload["followStateType"] == "FollowStateType_UNFOLLOW"
+    assert payload["memberUrn"] == {"memberId": NUMERIC_ID}
 
 
 def test_follow_member_surfaces_error():
@@ -131,6 +158,17 @@ def test_follow_member_surfaces_error():
         follow_member(client, "simon-foo")
     assert "HTTP 429" in str(exc.value)
     assert "rate limited" in str(exc.value)
+
+
+def test_follow_member_acoa_urn_resolves_via_dash_lookup():
+    """SDUI requires the numeric member ID, so even ACoA inputs must do a
+    dash profile lookup — the old shortcut that skipped the lookup is gone."""
+    client = _FakeClient()
+    follow_member(client, URN)
+    # Dash lookup happens regardless of input form (vanity vs ACoA).
+    assert len(client.fetch_calls) == 1
+    assert f"memberIdentity={URN}" in client.fetch_calls[0]["uri"]
+    assert len(client.post_calls) == 1
 
 
 # ---------- follow_company / unfollow_company ----------
@@ -189,30 +227,53 @@ def test_follow_company_lookup_http_error():
 
 
 # ---------- list_following ----------
+#
+# Modern path: /graphql?...voyagerSearchDashClusters via Curation Hub.
+# The response wraps results in clusters > items > entityResult.
 
 
-def _member_elem(urn=URN, name="Test User", headline="Eng @ Acme"):
+def _curation_member(urn=URN, name="Test User", headline="Eng @ Acme"):
     return {
-        "followeeUrn": f"urn:li:fsd_profile:{urn}",
-        "name": name,
-        "headline": headline,
+        "entityUrn": f"urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:{urn},...)",
+        "title": {"text": name},
+        "primarySubtitle": {"text": headline},
+        "navigationUrl": f"https://www.linkedin.com/in/{urn}/",
     }
 
 
-def _company_elem(cid=COMPANY_ID, name="Acme Corp", headline="Software"):
+def _curation_company(cid=COMPANY_ID, name="Acme Corp", headline="Software"):
     return {
-        "followeeUrn": f"urn:li:fsd_company:{cid}",
-        "name": name,
-        "headline": headline,
+        "entityUrn": f"urn:li:fsd_entityResultViewModel:(urn:li:fsd_company:{cid},...)",
+        "title": {"text": name},
+        "primarySubtitle": {"text": headline},
+        "navigationUrl": f"https://www.linkedin.com/company/acme/",
+    }
+
+
+def _curation_payload(*entity_results) -> dict:
+    """Wrap entity results in the SearchDashClustersByAll envelope.
+
+    Mirrors the real response shape verified live 2026-05-07: cluster.items
+    is a flat list of SearchItem objects, NOT {"elements": [...]}.
+    """
+    return {
+        "data": {
+            "searchDashClustersByAll": {
+                "elements": [
+                    {
+                        "items": [
+                            {"item": {"entityResult": er}} for er in entity_results
+                        ]
+                    }
+                ]
+            }
+        }
     }
 
 
 def test_list_following_paginates_until_short_page():
-    page1 = _FakeResponse(
-        200,
-        payload={"elements": [_member_elem(), _company_elem()]},
-    )
-    page2 = _FakeResponse(200, payload={"elements": []})
+    page1 = _FakeResponse(200, payload=_curation_payload(_curation_member(), _curation_company()))
+    page2 = _FakeResponse(200, payload=_curation_payload())  # empty cluster items
     client = _FakeClient(fetch_responses=[page1, page2])
 
     results = list_following(client, page_size=2)
@@ -223,38 +284,69 @@ def test_list_following_paginates_until_short_page():
     assert results[1]["kind"] == "company"
     assert results[1]["public_id"] == COMPANY_ID
 
-    # First call asks for start=0; either we stop because the 2-element page
-    # filled the request and the next page is empty, OR we stop because the
-    # page was short. Either way we should hit the endpoint at least once.
-    assert client.fetch_calls[0]["uri"] == "/feed/dash/followingStates"
-    assert client.fetch_calls[0]["params"]["q"] == "followingStates"
-    assert client.fetch_calls[0]["params"]["start"] == 0
-    assert client.fetch_calls[0]["params"]["count"] == 2
+    # First call hits the GraphQL endpoint with start=0, count=2.
+    first_uri = client.fetch_calls[0]["uri"]
+    assert first_uri.startswith("/graphql?variables=")
+    assert "start:0" in first_uri
+    assert "count:2" in first_uri
+    assert "MYNETWORK_CURATION_HUB" in first_uri
+    assert "PEOPLE_FOLLOW" in first_uri
 
 
 def test_list_following_respects_limit():
     page1 = _FakeResponse(
         200,
-        payload={
-            "elements": [_member_elem(name=f"User {i}") for i in range(5)]
-        },
+        payload=_curation_payload(*[_curation_member(name=f"User {i}") for i in range(5)]),
     )
     client = _FakeClient(fetch_responses=[page1])
 
     results = list_following(client, limit=3, page_size=10)
 
     assert len(results) == 3
-    # We asked for count=3 (min of page_size and limit) — single fetch.
+    # Single fetch — page returned more than enough to satisfy limit.
     assert len(client.fetch_calls) == 1
-    assert client.fetch_calls[0]["params"]["count"] == 3
+    assert "count:3" in client.fetch_calls[0]["uri"]
 
 
 def test_list_following_offset_passed_through():
-    client = _FakeClient(
-        fetch_responses=[_FakeResponse(200, payload={"elements": []})]
-    )
+    client = _FakeClient(fetch_responses=[_FakeResponse(200, payload=_curation_payload())])
     list_following(client, offset=42, page_size=10)
-    assert client.fetch_calls[0]["params"]["start"] == 42
+    assert "start:42" in client.fetch_calls[0]["uri"]
+
+
+def test_list_following_offset_advances_across_pages():
+    """When iterating past --limit, subsequent fetches start where the last
+    fetch left off (start = offset + sum of returned items). Mirrors the
+    pagination shape of fetch_connections."""
+    page1 = _FakeResponse(
+        200,
+        payload=_curation_payload(*[_curation_member(name=f"Page1 User {i}") for i in range(2)]),
+    )
+    page2 = _FakeResponse(
+        200,
+        payload=_curation_payload(*[_curation_member(name=f"Page2 User {i}") for i in range(2)]),
+    )
+    page3 = _FakeResponse(200, payload=_curation_payload())  # short page → stop
+    client = _FakeClient(fetch_responses=[page1, page2, page3])
+
+    results = list_following(client, offset=10, page_size=2)
+
+    assert len(results) == 4
+    # Three URLs: start=10, start=12, start=14 — proves we add page-length
+    # to the previous start, not just `offset`.
+    starts = [
+        int(call["uri"].split("start:")[1].split(",")[0])
+        for call in client.fetch_calls
+    ]
+    assert starts == [10, 12, 14]
+
+
+def test_list_following_default_page_size_matches_connections():
+    """Default page_size should match fetch_connections (40) so iterating a
+    full follow list doesn't make 4× as many Voyager calls."""
+    client = _FakeClient(fetch_responses=[_FakeResponse(200, payload=_curation_payload())])
+    list_following(client)  # no explicit page_size
+    assert "count:40" in client.fetch_calls[0]["uri"]
 
 
 def test_list_following_http_error():
@@ -271,6 +363,25 @@ def test_list_following_zero_limit_returns_empty():
     assert client.fetch_calls == []
 
 
+def test_list_following_company_result_type():
+    """result_type='COMPANIES' is reflected in the URL filter."""
+    client = _FakeClient(fetch_responses=[_FakeResponse(200, payload=_curation_payload())])
+    list_following(client, result_type="COMPANIES", page_size=5)
+    assert "COMPANIES" in client.fetch_calls[0]["uri"]
+
+
+def test_list_following_includes_canonical_url():
+    """Each result has a `url` field shaped like the connections output."""
+    client = _FakeClient(
+        fetch_responses=[
+            _FakeResponse(200, payload=_curation_payload(_curation_member(), _curation_company()))
+        ]
+    )
+    results = list_following(client, page_size=2)
+    assert results[0]["url"] == f"https://www.linkedin.com/in/{URN}/"
+    assert results[1]["url"] == f"https://www.linkedin.com/company/{COMPANY_ID}/"
+
+
 # ---------- formatters ----------
 
 
@@ -282,16 +393,31 @@ def test_format_json_round_trips():
 
 def test_format_table_renders_member_and_company():
     items = [
-        {"name": "Alice", "kind": "member", "public_id": URN, "headline": "Eng"},
-        {"name": "Acme", "kind": "company", "public_id": COMPANY_ID, "headline": "SaaS"},
+        {
+            "name": "Alice",
+            "kind": "member",
+            "public_id": URN,
+            "headline": "Eng",
+            "url": f"https://www.linkedin.com/in/{URN}/",
+        },
+        {
+            "name": "Acme",
+            "kind": "company",
+            "public_id": COMPANY_ID,
+            "headline": "SaaS",
+            "url": f"https://www.linkedin.com/company/{COMPANY_ID}/",
+        },
     ]
     out = format_table(items)
     assert "Alice" in out
-    assert "[member]" in out
+    assert "Eng" in out
     assert f"https://www.linkedin.com/in/{URN}/" in out
     assert "Acme" in out
-    assert "[company]" in out
+    assert "SaaS" in out
     assert f"https://www.linkedin.com/company/{COMPANY_ID}/" in out
+    # No more [member] / [company] tags — match connections format style.
+    assert "[member]" not in out
+    assert "[company]" not in out
 
 
 def test_format_table_empty():
