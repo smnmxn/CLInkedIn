@@ -16,6 +16,7 @@ def search_people(
     query: str,
     network_depths: list[str] | None = None,
     limit: int | None = None,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Search LinkedIn people by keywords, optionally filtered by network depth."""
     kwargs: dict[str, Any] = {"keywords": query}
@@ -23,7 +24,13 @@ def search_people(
         kwargs["network_depths"] = network_depths
     if limit is not None:
         kwargs["limit"] = limit
+    if offset:
+        kwargs["offset"] = offset
     raw = client.search_people(**kwargs)
+    # linkedin_api's search() uses `limit` only to stop paginating; it never
+    # truncates, so the first page can blow past the requested count.
+    if limit is not None and limit >= 0:
+        raw = raw[:limit]
     return [{**r, "url": _profile_url(r.get("urn_id"))} for r in raw]
 
 

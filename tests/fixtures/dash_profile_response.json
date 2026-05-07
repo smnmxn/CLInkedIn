@@ -1,0 +1,40 @@
+{
+  "elements": [
+    {
+      "entityUrn": "urn:li:fsd_profile:ACoAAAEXAMPLE000000000000000000000000",
+      "objectUrn": "urn:li:member:99999999",
+      "publicIdentifier": "ada-lovelace",
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "headline": "Mathematician at Analytical Engine Co",
+      "summary": "I write algorithms.\nNote: this is a multi-line summary.",
+      "multiLocaleFirstName": {
+        "en_US": "Ada"
+      },
+      "multiLocaleLastName": {
+        "en_US": "Lovelace"
+      },
+      "multiLocaleHeadline": {
+        "en_US": "Mathematician at Analytical Engine Co"
+      },
+      "multiLocaleSummary": {
+        "en_US": "I write algorithms.\nNote: this is a multi-line summary."
+      },
+      "profilePicture": {
+        "displayImage": {
+          "vectorImage": {
+            "rootUrl": "https://media.licdn.com/dms/image/v2/EXAMPLE/profile-displayphoto-shrink_",
+            "artifacts": []
+          }
+        }
+      },
+      "premium": false,
+      "showVerificationBadge": false
+    }
+  ],
+  "paging": {
+    "start": 0,
+    "count": 10,
+    "total": 1
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "metadata": {
+    "paginationToken": ""
+  },
+  "elements": [
+    {
+      "updateMetadata": {
+        "urn": "urn:li:activity:7000000000000000001"
+      },
+      "commentary": {
+        "text": {
+          "text": "When everyone can build, nobody's job is building anymore.\n\nIt's deciding what to keep.\n\nAI fluency is becoming baseline - like email or spreadsheets. Designers are submitting PRs. Non-engineers are prototyping. Role boundaries are dissolving faster than org charts can keep up.\n\nBut here's what most teams aren't thinking about: we already had a curation problem before AI showed up.\n\n80% of features in most products go unused. That's not a guess - it's been measured repeatedly. We were overbuilding when building was expensive.\n\nNow building is nearly free.\n\nThe bottleneck isn't production anymore. It's coherence. Someone has to look at what's been made and ask whether it should exist at all.\n\nI've seen this pattern across every product I've built. The hard work was never making the thing. It was knowing which things to kill.\n\nThe teams that win from here won't be the ones that ship fastest. They'll be the ones brave enough to delete.\n\nWhat's the last feature your team killed - and how long did it take to make that call?"
+        },
+        "numLines": 0
+      },
+      "socialDetail": {
+        "totalSocialActivityCounts": {
+          "numLikes": 1,
+          "numComments": 0
+        }
+      },
+      "actor": {
+        "subDescription": {
+          "text": "1d \u2022   ",
+          "accessibilityText": "1 day ago"
+        }
+      }
+    },
+    {
+      "updateMetadata": {
+        "urn": "urn:li:activity:7000000000000000002"
+      },
+      "commentary": {
+        "text": {
+          "text": ""
+        },
+        "numLines": 0
+      },
+      "socialDetail": {
+        "totalSocialActivityCounts": {
+          "numLikes": 1,
+          "numComments": 0
+        }
+      },
+      "actor": {
+        "subDescription": {
+          "text": "5d \u2022   ",
+          "accessibilityText": "5 days ago"
+        }
+      }
+    },
+    {
+      "updateMetadata": {
+        "urn": "urn:li:activity:7000000000000000003"
+      },
+      "commentary": {
+        "text": {
+          "text": "\ud83e\uddd1\u200d\ud83d\udcbb I need to find design partners for SupportPages.io.\n\nNot customers. Partners. People who'll use it, break it, and tell me what's wrong with it.\n\nSo I set myself a challenge. Generate one help centre a day for an open source project. Entirely from their codebase. No manual editing.\n\nThe qualifying criteria are strict. The project has to be actively shipping features. Real users. A commercial offering. And little or no user documentation.\n\nThen I send it to the maintainer / founder. Here's your help centre. It updates every time you push code. Use it for free. Just tell me what's good and what's rubbish.\n\nHere's what I've done so far:\n\n\ud83c\udfa5 Cap - open source Loom alternative. 18k GitHub stars, 30,000 teams. 46 articles generated. \n\n\ud83d\udcca Ghostfolio - open source portfolio tracker. 4k stars. Users requesting docs on GitHub. None exist. 45 articles generated. \n\n\ud83d\udcf1 Postiz - open source social media scheduler. 16k stars. Developer docs only, zero user-facing help. \n\n\ud83d\udccb Planka - open source project management. 8k stars, 8 million Docker pulls. No user documentation at all. \n\nEvery project tells the same story. Small teams ship fast. Documentation doesn't keep up.\n\nI've been shipping software for 15 years. The docs were always the thing we'd get to later. Later never came.\n\nIf you maintain an open source project (or even use one where the documentation is lacking) and want a free help centre that updates itself - drop me a link \ud83d\udc47\n\n#buildinpublic"
+        },
+        "numLines": 0
+      },
+      "socialDetail": {
+        "totalSocialActivityCounts": {
+          "numLikes": 0,
+          "numComments": 0
+        }
+      },
+      "actor": {
+        "subDescription": {
+          "text": "6d \u2022   ",
+          "accessibilityText": "6 days ago"
+        }
+      }
+    }
+  ],
+  "paging": {
+    "start": 0,
+    "count": 3,
+    "total": 3
+  }
+}
