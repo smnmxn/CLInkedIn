@@ -1,6 +1,6 @@
 ---
 name: clinkedin
-description: Operate on the user's own LinkedIn account from the terminal. Use when the user wants to list/search their connections, send or remove connection invites, follow/unfollow people or companies, view a profile (bio or recent posts), or search LinkedIn for people or posts. Authenticated via the user's Chrome session — no API key. Includes destructive operations (invite, disconnect) which require explicit confirmation.
+description: Operate on the user's own LinkedIn account from the terminal. Use when the user wants to list/search their connections, send or remove connection invites, follow/unfollow people or companies, view a profile (bio or recent posts), search LinkedIn for people or posts, post a public comment on a LinkedIn post, or reply in an existing direct-message conversation. Authenticated via the user's Chrome session — no API key. Includes destructive operations (invite, disconnect, comment, message) which require explicit confirmation.
 ---
 
 # clinkedin
@@ -132,6 +132,48 @@ clinkedin disconnect https://www.linkedin.com/in/<slug>/ --yes
 
 There is **no undo** — re-connecting requires a new invite. Always get explicit user confirmation. (This command bypasses `linkedin-api`'s dead `remove_connection` and calls `/relationships/dash/memberRelationships` directly.)
 
+### Post a comment on a post
+
+```sh
+clinkedin comment https://www.linkedin.com/feed/update/urn:li:activity:7…/ --message "Great point"
+clinkedin comment <url> --message-file ./reply.md      # for longer text
+clinkedin comment <url> --message "…" --dry-run        # preview, send nothing
+clinkedin comment <url> --message "…" --yes            # skip Y/N prompt (use sparingly for comments)
+```
+
+Accepted URL forms (all parsed to the same `urn:li:activity:<id>`):
+
+- `https://www.linkedin.com/feed/update/urn:li:activity:N/`
+- `https://www.linkedin.com/feed/update/urn:li:ugcPost:N/`
+- `https://www.linkedin.com/posts/<vanity>_<slug>-activity-N-XYZ`
+- A bare `urn:li:activity:N`
+
+Comments are **public, persistent, and notify the post author**. Always show the user the exact text you intend to post and confirm before invoking — even if `--yes` is in your toolbox, prefer the interactive prompt for comments. v1 is plain text only (no mentions, hashtags, links with previews, or attachments). LinkedIn caps comment length at ~1250 chars; this CLI doesn't expose comment delete — retractions need the web UI.
+
+**Cost:** one HTML page fetch (to scrape the post's `activityId` + `trackingId`, which LinkedIn's modern SDUI endpoint requires) + one SDUI POST. ~2 round trips per comment. Implemented against `/flagship-web/rsc-action/.../com.linkedin.sdui.comments.createComment` — captured live; this code path is fragile to LinkedIn UI changes and may need re-capture from DevTools when it next 400s.
+
+### Send a direct message (reply only)
+
+```sh
+clinkedin message https://www.linkedin.com/messaging/thread/2-…/ --message "On my way!"
+clinkedin message urn:li:msg_conversation:(urn:li:fsd_profile:ACoA…,2-…) --message "…"
+clinkedin message 2-…    --message-file ./reply.md       # bare thread id form
+clinkedin message <target> --message "…" --dry-run        # preview, send nothing
+clinkedin message <target> --message "…" --yes            # skip Y/N prompt
+```
+
+Accepted target forms (all resolve to the same conversation):
+
+- A LinkedIn messaging URL: `https://www.linkedin.com/messaging/thread/2-…/`
+- A full conversation URN: `urn:li:msg_conversation:(urn:li:fsd_profile:ACoA…,2-…)`
+- A bare thread id starting with `2-` (combined with the logged-in user's mailbox)
+
+**Scope: reply-only.** This command sends into an **existing** conversation; it cannot start a brand-new thread with a recipient who has no prior conversation with the user. (The "first message to a stranger" payload shape is different and wasn't in the captured HAR — needs a fresh capture before it can be wired up.) If the user asks to "DM someone we've never messaged before," tell them this and suggest opening the thread once in the LinkedIn web UI first, then reusing the URL here.
+
+Messages are **private, persistent, and notify the recipient** (push + email). Always show the user the exact text and confirm before sending — prefer the interactive prompt over `--yes` unless the user explicitly authorized that exact text. Plain text only; no attachments, mentions, or rich content in v1.
+
+**Cost:** one POST to `/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage` (plus one `/me` lookup the first time per session, cached after). Captured live 2026-05-11; this bypasses `linkedin-api`'s dead `client.send_message` wrapper (the legacy `/messaging/conversations/<id>/events` path 500s).
+
 ### Follow / unfollow
 
 ```sh
@@ -169,12 +211,14 @@ Follow is non-destructive but visible to the followed person/company. Less risky
 |---|---|
 | `connections`, `following`, `view`, `search` | Run without confirmation — read-only. |
 | `connect`, `disconnect`, `follow`, `unfollow` | **Ask the user first.** Show what will happen. Use `--dry-run` to preview when the user is unsure. |
+| `comment` | **Show the exact comment text and confirm.** Comments are public, notify the author, and have no API delete. Default to interactive (don't auto-pass `--yes`) unless the user explicitly authorized that exact text. |
+| `message` | **Show the exact message text and confirm.** Messages are private but notify the recipient (push + email) and can't be unsent by the API. Default to interactive (don't auto-pass `--yes`) unless the user explicitly authorized that exact text. |
 | Bulk operations (multiple targets) | Confirm the full list before sending the first request. Keep the burst small to protect the session. |
 
 ## Troubleshooting
 
 - **`HTTP 410` errors** — LinkedIn deprecated the legacy `/profileView` endpoint. The CLI has been migrated to the modern Dash endpoint; if you still see 410s, the install is stale (`uv tool install --editable` again).
-- **`HTTP 400` on `following`, `follow`, or `unfollow`** — usually means LinkedIn rotated the GraphQL `queryId` hash baked into the bundle (for `following`) or moved the SDUI endpoint shape (for `follow`/`unfollow`). Both have hardcoded values that need re-capturing from a real LinkedIn web session via DevTools (Network tab → trigger the action → Copy as cURL → share). One commit usually fixes it.
+- **`HTTP 400` on `following`, `follow`, `unfollow`, `comment`, or `message`** — usually means LinkedIn rotated the GraphQL `queryId` hash baked into the bundle (for `following`) or moved the SDUI / Voyager endpoint shape (for the others). All have hardcoded values that need re-capturing from a real LinkedIn web session via DevTools (Network tab → trigger the action → Copy as cURL → share). One commit usually fixes it.
 - **`HTTP 401` / "session may be rate-limited"** — stop, do not retry. The session is locked for 30 minutes to several hours. Tell the user to pause and try again later.
 - **`view --posts` returns empty after `--since`** — the user's posts may genuinely all be older than the window. Try a wider `--since` or omit it. If `--since 1y` is also empty, the user may have no posts visible to your session (1st-degree only / privacy settings).
 - **Debug flags** — `view --posts --debug` dumps the raw `/identity/profileUpdatesV2` response; `following --debug` dumps the raw GraphQL Curation Hub response. Use only when investigating an unexpected error; each invocation is one more Voyager call against a fragile session.

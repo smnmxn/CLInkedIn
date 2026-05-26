@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .auth import NotAuthenticatedError, login, login_from_chrome, login_with_cookie
 from .client import make_client
+from .comment import CommentError, parse_post_url, post_comment
 from .connections import fetch_connections, format_json, format_table
 from .disconnect import DisconnectError, remove_connection
 from .follow import (
@@ -24,6 +25,7 @@ from .follow import (
 from .follow import format_json as following_format_json
 from .follow import format_table as following_format_table
 from .invite import InviteError, parse_profile_url, send_invite
+from .message import MAX_MESSAGE_LEN, MessageError, parse_thread_target, send_message
 from .posts import AuthExpiredError, PageShapeError
 from .posts import format_json as posts_format_json
 from .posts import format_table as posts_format_table
@@ -252,6 +254,168 @@ def _cmd_disconnect(args: argparse.Namespace) -> int:
     return 0
 
 
+_COMMENT_MAX_LEN = 1250
+
+
+def _cmd_comment(args: argparse.Namespace) -> int:
+    # Parse just to validate the URL up front; the IDs are extracted again
+    # inside post_comment (which may also fetch the post page for missing IDs).
+    try:
+        ids = parse_post_url(args.url)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    has_msg = args.message is not None
+    has_file = args.message_file is not None
+    if has_msg == has_file:  # both or neither
+        print(
+            "Provide exactly one of --message or --message-file.", file=sys.stderr
+        )
+        return 2
+
+    if has_file:
+        try:
+            message = Path(args.message_file).read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"Could not read --message-file {args.message_file!r}: {e}", file=sys.stderr)
+            return 2
+    else:
+        message = args.message or ""
+
+    message = message.rstrip()
+    if not message:
+        print("Comment message is empty.", file=sys.stderr)
+        return 2
+    if len(message) > _COMMENT_MAX_LEN:
+        print(
+            f"Comment too long ({len(message)}/{_COMMENT_MAX_LEN}).",
+            file=sys.stderr,
+        )
+        return 2
+
+    target_label = (
+        f"urn:li:activity:{ids['activity_id']}"
+        if ids.get("activity_id")
+        else f"urn:li:share:{ids['share_id']}"
+        if ids.get("share_id")
+        else args.url
+    )
+    print(f"Comment target: {target_label}", flush=True)
+    print(f"Message ({len(message)} chars):", flush=True)
+    for line in message.split("\n"):
+        print(f"  ┃ {line}", flush=True)
+
+    if args.dry_run:
+        return 0
+
+    if not args.yes:
+        sys.stdout.flush()
+        try:
+            reply = input("\nPost this comment? [y/N] ").strip().lower()
+        except EOFError:
+            print("Aborted (no input).", file=sys.stderr)
+            return 0
+        if reply not in ("y", "yes"):
+            print("Aborted.")
+            return 0
+
+    try:
+        client = make_client()
+    except NotAuthenticatedError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    try:
+        result = post_comment(client, args.url, message)
+    except CommentError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Comment failed: {e}", file=sys.stderr)
+        print("If this looks like a session error, run 'clinkedin login' again.", file=sys.stderr)
+        return 1
+
+    print(f"Comment posted on {target_label}")
+    comment_urn = result.get("urn") if isinstance(result, dict) else None
+    if comment_urn:
+        print(f"Comment URN: {comment_urn}")
+    return 0
+
+
+def _cmd_message(args: argparse.Namespace) -> int:
+    has_msg = args.message is not None
+    has_file = args.message_file is not None
+    if has_msg == has_file:
+        print("Provide exactly one of --message or --message-file.", file=sys.stderr)
+        return 2
+
+    if has_file:
+        try:
+            text = Path(args.message_file).read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"Could not read --message-file {args.message_file!r}: {e}", file=sys.stderr)
+            return 2
+    else:
+        text = args.message or ""
+
+    text = text.rstrip()
+    if not text:
+        print("Message text is empty.", file=sys.stderr)
+        return 2
+    if len(text) > MAX_MESSAGE_LEN:
+        print(f"Message too long ({len(text)}/{MAX_MESSAGE_LEN}).", file=sys.stderr)
+        return 2
+
+    try:
+        client = make_client()
+    except NotAuthenticatedError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    try:
+        mailbox_urn, thread_id = parse_thread_target(client, args.target)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except InviteError as e:
+        # resolve_self_urn raises InviteError for auth/lookup failures.
+        print(str(e), file=sys.stderr)
+        return 1
+
+    print(f"Conversation: {thread_id}", flush=True)
+    print(f"Message ({len(text)} chars):", flush=True)
+    for line in text.split("\n"):
+        print(f"  ┃ {line}", flush=True)
+
+    if args.dry_run:
+        return 0
+
+    if not args.yes:
+        sys.stdout.flush()
+        try:
+            reply = input("\nSend this message? [y/N] ").strip().lower()
+        except EOFError:
+            print("Aborted (no input).", file=sys.stderr)
+            return 0
+        if reply not in ("y", "yes"):
+            print("Aborted.")
+            return 0
+
+    try:
+        send_message(client, mailbox_urn, thread_id, text)
+    except MessageError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Send failed: {e}", file=sys.stderr)
+        print("If this looks like a session error, run 'clinkedin login' again.", file=sys.stderr)
+        return 1
+
+    print(f"Message sent to {thread_id}")
+    return 0
+
+
 def _cmd_follow(args: argparse.Namespace) -> int:
     return _follow_or_unfollow(args, action="follow")
 
@@ -443,6 +607,10 @@ def main(argv: list[str] | None = None) -> int:
             "  clinkedin connect https://www.linkedin.com/in/<slug>/ \\\n"
             "      --message 'Hi, met at the conference' --yes\n"
             "  clinkedin disconnect https://www.linkedin.com/in/<slug>/ --yes\n"
+            "  clinkedin comment https://www.linkedin.com/feed/update/urn:li:activity:7…/ \\\n"
+            "      --message 'Great point — agreed'\n"
+            "  clinkedin message https://www.linkedin.com/messaging/thread/2-…/ \\\n"
+            "      --message 'On my way!' --yes\n"
             "  clinkedin follow https://www.linkedin.com/in/<slug>/ --yes\n"
             "  clinkedin follow https://www.linkedin.com/company/<slug>/ --yes\n"
             "  clinkedin unfollow https://www.linkedin.com/company/<slug>/ --yes\n"
@@ -495,6 +663,26 @@ def main(argv: list[str] | None = None) -> int:
     dc.add_argument("url", help="LinkedIn profile URL (https://www.linkedin.com/in/<slug>/)")
     dc.add_argument("--dry-run", action="store_true", help="Parse the URL and exit without disconnecting")
     dc.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+
+    cm = sub.add_parser("comment", help="Post a public comment on a LinkedIn post")
+    cm.add_argument("url", help="LinkedIn post URL or urn:li:activity:<id>")
+    cm.add_argument("--message", type=str, default=None, help=f"Comment text (max {_COMMENT_MAX_LEN} chars)")
+    cm.add_argument("--message-file", type=str, default=None, help="Read comment text from FILE (UTF-8)")
+    cm.add_argument("--dry-run", action="store_true", help="Parse the URL and exit without posting")
+    cm.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+
+    mg = sub.add_parser("message", help="Reply in an existing LinkedIn conversation")
+    mg.add_argument(
+        "target",
+        help=(
+            "Conversation target: thread URL (https://www.linkedin.com/messaging/thread/2-…/), "
+            "full urn:li:msg_conversation:(…) URN, or bare 2-… thread id"
+        ),
+    )
+    mg.add_argument("--message", type=str, default=None, help=f"Message text (max {MAX_MESSAGE_LEN} chars)")
+    mg.add_argument("--message-file", type=str, default=None, help="Read message text from FILE (UTF-8)")
+    mg.add_argument("--dry-run", action="store_true", help="Parse the target and exit without sending")
+    mg.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
 
     fl = sub.add_parser("follow", help="Follow a person or company")
     fl.add_argument("url", help="LinkedIn member (/in/<slug>) or company (/company/<slug>) URL")
@@ -564,6 +752,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_connect(args)
     if args.command == "disconnect":
         return _cmd_disconnect(args)
+    if args.command == "comment":
+        return _cmd_comment(args)
+    if args.command == "message":
+        return _cmd_message(args)
     if args.command == "follow":
         return _cmd_follow(args)
     if args.command == "unfollow":

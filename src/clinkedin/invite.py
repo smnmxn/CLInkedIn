@@ -92,6 +92,42 @@ def resolve_profile_identity(client, identifier: str) -> dict:
     }
 
 
+def resolve_self_urn(client) -> str:
+    """Return the authenticated viewer's `urn:li:fsd_profile:ACoA...` URN.
+
+    Cached on the client object after the first lookup so a session that makes
+    multiple authoring calls (e.g. several comments in a row) only spends one
+    Voyager Dash call to identify the viewer.
+    """
+    cached = getattr(client, "_self_urn", None)
+    if cached:
+        return cached
+    res = client._fetch(
+        "/voyagerIdentityDashProfiles?q=memberIdentity&memberIdentity=me"
+    )
+    if res.status_code != 200:
+        raise InviteError(
+            f"Self profile lookup failed (HTTP {res.status_code}). "
+            "Your session may be expired — try 'clinkedin login'."
+        )
+    try:
+        data = res.json()
+    except ValueError as e:
+        raise InviteError("Self profile lookup returned non-JSON.") from e
+    elements = data.get("elements") or []
+    if not elements:
+        raise InviteError("Self profile lookup returned no elements.")
+    m = _URN_RE.search(json.dumps(elements[0]))
+    if not m:
+        raise InviteError("Could not extract self profile URN.")
+    urn = f"urn:li:fsd_profile:{m.group(0)}"
+    try:
+        client._self_urn = urn
+    except AttributeError:
+        pass  # client doesn't permit attribute assignment; not fatal.
+    return urn
+
+
 def send_invite(client, public_id: str, message: str = "") -> None:
     """Send a connection request. Raises InviteError on failure."""
     urn = resolve_profile_urn(client, public_id)

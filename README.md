@@ -27,6 +27,13 @@ clinkedin connect https://www.linkedin.com/in/<slug>/ --yes    # skip the prompt
 clinkedin disconnect https://www.linkedin.com/in/<slug>/       # prompts Y/N — no undo
 clinkedin disconnect https://www.linkedin.com/in/<slug>/ --yes
 
+clinkedin comment https://www.linkedin.com/feed/update/urn:li:activity:N/ --message "Great point"
+clinkedin comment <url> --message-file ./reply.txt             # for longer text
+clinkedin comment <url> --message "..." --dry-run              # preview, send nothing
+
+clinkedin message https://www.linkedin.com/messaging/thread/2-.../ --message "On my way!"
+clinkedin message 2-...   --message-file ./reply.md            # reply into existing thread by bare id
+
 clinkedin follow https://www.linkedin.com/in/<slug>/           # follow a person (no connection request)
 clinkedin follow https://www.linkedin.com/company/<slug>/      # follow a company
 clinkedin unfollow https://www.linkedin.com/company/<slug>/    # stop following
