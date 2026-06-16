@@ -1,6 +1,6 @@
 ---
 name: clinkedin
-description: Operate on the user's own LinkedIn account from the terminal. Use when the user wants to list/search their connections, send or remove connection invites, follow/unfollow people or companies, view a profile (bio or recent posts), search LinkedIn for people or posts, post a public comment on a LinkedIn post, or reply in an existing direct-message conversation. Authenticated via the user's Chrome session — no API key. Includes destructive operations (invite, disconnect, comment, message) which require explicit confirmation.
+description: Operate on the user's own LinkedIn account from the terminal. Use when the user wants to list/search their connections, send or remove connection invites, follow/unfollow people or companies, view a profile (bio or recent posts), search LinkedIn for people or posts, publish a new feed post (text and optional single image), post a public comment on a LinkedIn post, or reply in an existing direct-message conversation. Also use when the user wants to queue or schedule write actions to drip out over time and avoid rate limits (bulk invites, etc.) via `--queue` and the `clinkedin queue` runner. Authenticated via the user's Chrome session — no API key. Includes destructive operations (invite, disconnect, post, comment, message) which require explicit confirmation.
 ---
 
 # clinkedin
@@ -92,10 +92,13 @@ clinkedin view <url> --posts --since 1mo --limit 50 --json --output posts.json
 ```sh
 clinkedin search people "product manager fintech"
 clinkedin search people "designer" --network F,S --limit 50         # 1st + 2nd-degree
+clinkedin search people "" --network F --industry "Financial Services"  # 1st-degree in an industry
 clinkedin search people "founder" --limit 25 --offset 25 --json
 ```
 
 `--network` accepts a comma-separated subset of `F` (1st), `S` (2nd), `O` (3rd+). Default `--limit` is 25. Each result has a URN-form URL (`https://www.linkedin.com/in/ACoA…/`) that LinkedIn redirects to the canonical profile when opened in a browser.
+
+`--industry` filters by a LinkedIn industry name (e.g. `"Financial Services"`, resolved offline to a code) or a raw numeric code; repeat to match any. Filtering is server-side, so rows don't show the industry value. To list "my connections in industry X", combine `--network F --industry "X"` — but `search` reads the search index, which lags removals, so `clinkedin connections` remains the authoritative source for the current connection set.
 
 ### Search posts (web-scrape, fragile)
 
@@ -152,6 +155,24 @@ Comments are **public, persistent, and notify the post author**. Always show the
 
 **Cost:** one HTML page fetch (to scrape the post's `activityId` + `trackingId`, which LinkedIn's modern SDUI endpoint requires) + one SDUI POST. ~2 round trips per comment. Implemented against `/flagship-web/rsc-action/.../com.linkedin.sdui.comments.createComment` — captured live; this code path is fragile to LinkedIn UI changes and may need re-capture from DevTools when it next 400s.
 
+### Publish a new feed post
+
+```sh
+clinkedin post --message "Shipping v2 today — link below"
+clinkedin post --message-file ./announcement.md                  # for longer text
+clinkedin post --message "Launch day" --image ~/Pictures/cover.png
+clinkedin post --message "…" --dry-run                            # validate, publish nothing
+clinkedin post --message "…" --yes                                # skip Y/N (avoid for posts)
+```
+
+Visibility is **hardcoded to PUBLIC in v1** — there's no `--visibility` flag yet. Images are limited to one per post (PNG or JPG, ≤10 MB). Body text cap is ~3000 chars (LinkedIn web composer; refined once confirmed from HAR). No mentions, hashtags-with-autocomplete, polls, documents, video, or article-link previews in v1.
+
+Posts are **public, persistent, notify followers, and have no API delete** — retraction needs the web UI. **Always show the user the exact body text and image filename and confirm before invoking.** Prefer the interactive prompt over `--yes`.
+
+**Status: pending HAR capture.** The networking calls (image-asset registration, asset PUT, create-share POST) are gated behind a HAR capture from a real LinkedIn web session — until the capture lands, `clinkedin post` validates inputs and dry-runs but refuses to publish (it raises a clear "HAR capture" error rather than blind-probing Voyager, which would risk 401-locking the session for hours). Dry-run is fully usable now.
+
+To unblock: open linkedin.com in Chrome → DevTools → Network → "Preserve log" → create a text post and a single-image post → "Save all as HAR" → share the HAR file. One commit then wires the SDUI request id and payload shape into `post.py`.
+
 ### Send a direct message (reply only)
 
 ```sh
@@ -196,8 +217,24 @@ Follow is non-destructive but visible to the followed person/company. Less risky
 
 - **Bursts kill the session.** Multiple Voyager calls within seconds can 401-lock the entire session for 30 minutes to several hours. If a command returns an HTTP 401 or any "session may be rate-limited" error, **stop immediately** and tell the user to wait. Do not retry.
 - **Fetch once, cache.** If you need to iterate over connections or search results, run the command once with `--json --output <path>`, then read the file.
-- **Don't schedule it.** No cron, no loops, no "every N minutes" automations.
+- **Don't burst.** No tight loops, no fanning out many writes in seconds. The one sanctioned way to do volume is the **queue** (below), which runs at most one job per scheduled tick.
 - **Note:** `clinkedin search posts` is web-scraping (not Voyager) so it doesn't share the same rate limit, but it can break when LinkedIn ships UI changes.
+
+## Queue (bulk / deferred writes)
+
+To do many writes (e.g. send a batch of invites) without bursting, **queue** them instead of sending immediately. Every destructive command accepts `--queue`:
+
+```sh
+clinkedin connect https://www.linkedin.com/in/<slug>/ --message "Hi" --queue   # records the job, no network call
+clinkedin queue list                                                           # pending + dead-lettered jobs
+clinkedin queue run                                                            # execute the single oldest job (FIFO), then exit
+clinkedin queue remove <id> | clinkedin queue clear | clinkedin queue retry <id>
+```
+
+- `--queue` validates inputs and writes the job to `~/.config/clinkedin/queue/` **without contacting LinkedIn** — so queueing a batch is safe and never confirmation-gated (nothing is sent yet). Get the user's confirmation on the *content* as usual before they (or the scheduler) drain it.
+- **Sends are jittered to look less like a bot.** `clinkedin queue install` writes a launchd agent that wakes every 60s but the runner gates each send: a randomized gap (default 5–20 min), an active-hours window (default 08:00–20:00 local), and an optional `--daily-cap`. `launchctl load -w ~/Library/LaunchAgents/com.clinkedin.queue.plist` to start, `clinkedin queue uninstall` to stop. The same gates are flags on `queue run` (`--min-interval`/`--max-interval`/`--active-hours`/`--daily-cap`); the cron equivalent line is printed by `queue install`.
+- Failed jobs retry on the next few ticks, then dead-letter after 3 attempts (`queue list` shows the last error).
+- **Jitter is hardening, not a cloak; volume matters more.** The bigger detection risks are the unofficial API and sheer volume. The gates space sends out but don't impose a weekly ceiling, so keep volume human-plausible: recommend the user set `--daily-cap` and enqueue at most a week's worth of invites (LinkedIn allows ~100–200/week) at a time.
 
 ## Choosing output format
 
@@ -212,8 +249,10 @@ Follow is non-destructive but visible to the followed person/company. Less risky
 | `connections`, `following`, `view`, `search` | Run without confirmation — read-only. |
 | `connect`, `disconnect`, `follow`, `unfollow` | **Ask the user first.** Show what will happen. Use `--dry-run` to preview when the user is unsure. |
 | `comment` | **Show the exact comment text and confirm.** Comments are public, notify the author, and have no API delete. Default to interactive (don't auto-pass `--yes`) unless the user explicitly authorized that exact text. |
+| `post` | **Show the exact body and image filename and confirm.** Posts are public, persistent, notify followers, and have no API delete. Default to interactive — strongly prefer the prompt over `--yes`. Visibility is hardcoded PUBLIC in v1. |
 | `message` | **Show the exact message text and confirm.** Messages are private but notify the recipient (push + email) and can't be unsent by the API. Default to interactive (don't auto-pass `--yes`) unless the user explicitly authorized that exact text. |
-| Bulk operations (multiple targets) | Confirm the full list before sending the first request. Keep the burst small to protect the session. |
+| Bulk operations (multiple targets) | Prefer `--queue` so jobs drip out one per tick instead of bursting. Confirm the full list before enqueueing. |
+| `queue list/run/remove/clear/retry/install` | Queue management — run without confirmation. `--queue` on a write command only records the job (no send), so it's not confirmation-gated; confirm the content before it's drained. |
 
 ## Troubleshooting
 
