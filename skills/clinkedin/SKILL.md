@@ -1,6 +1,6 @@
 ---
 name: clinkedin
-description: Operate on the user's own LinkedIn account from the terminal. Use when the user wants to list/search their connections, send or remove connection invites, follow/unfollow people or companies, view a profile (bio or recent posts), search LinkedIn for people or posts, publish a new feed post (text and optional single image), post a public comment on a LinkedIn post, or reply in an existing direct-message conversation. Authenticated via the user's Chrome session — no API key. Includes destructive operations (invite, disconnect, post, comment, message) which require explicit confirmation.
+description: Operate on the user's own LinkedIn account from the terminal. Use when the user wants to list/search their connections, send or remove connection invites, follow/unfollow people or companies, view a profile (bio or recent posts), search LinkedIn for people or posts, publish a new feed post (text and optional single image), post a public comment on a LinkedIn post, or reply in an existing direct-message conversation. Also use when the user wants to queue or schedule write actions to drip out over time and avoid rate limits (bulk invites, etc.) via `--queue` and the `clinkedin queue` runner. Authenticated via the user's Chrome session — no API key. Includes destructive operations (invite, disconnect, post, comment, message) which require explicit confirmation.
 ---
 
 # clinkedin

@@ -60,7 +60,17 @@ clinkedin search people "founder" --json --output founders.json
 clinkedin search posts "AI agents"                             # Text · URL
 clinkedin search posts "RAG" --limit 5
 clinkedin search posts "vector db" --json --output posts.json
+
+clinkedin connect <url> --message "Hi" --queue                 # defer instead of sending now (any write command)
+clinkedin queue list                                           # pending + dead-lettered jobs
+clinkedin queue run                                            # execute the oldest queued job and exit
+clinkedin queue install                                        # launchd agent: drains the queue on a jittered schedule
 ```
+
+Any write command (`connect`, `disconnect`, `comment`, `post`, `message`,
+`follow`, `unfollow`) takes `--queue` to defer it. See
+[Queue](#queue-rate-limit-friendly-bulk-writes) below for the scheduler and the
+anti-rate-limit strategy.
 
 `--network` accepts a comma-separated subset of `F` (1st), `S` (2nd), `O` (3rd+); omit to search all. `--limit` defaults to 25 for people. Each result includes a `url` field (URN-form, e.g. `https://www.linkedin.com/in/ACoAA…/`) — LinkedIn redirects this to the canonical profile in the browser.
 
