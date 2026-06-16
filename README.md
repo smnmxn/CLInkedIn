@@ -34,6 +34,10 @@ clinkedin comment <url> --message "..." --dry-run              # preview, send n
 clinkedin message https://www.linkedin.com/messaging/thread/2-.../ --message "On my way!"
 clinkedin message 2-...   --message-file ./reply.md            # reply into existing thread by bare id
 
+clinkedin post --message "Shipping v2 today"                   # publish a text-only feed post (PUBLIC)
+clinkedin post --message "Launch day" --image ~/Pictures/cover.png   # single image (PNG/JPG, <=10MB)
+clinkedin post --message-file ./announcement.md --dry-run      # preview only, publish nothing
+
 clinkedin follow https://www.linkedin.com/in/<slug>/           # follow a person (no connection request)
 clinkedin follow https://www.linkedin.com/company/<slug>/      # follow a company
 clinkedin unfollow https://www.linkedin.com/company/<slug>/    # stop following
@@ -49,6 +53,7 @@ clinkedin view https://www.linkedin.com/in/<slug>/ --posts --limit 25 --json    
 
 clinkedin search people "product manager fintech"              # Name · Headline · Location · URL
 clinkedin search people "designer" --network F,S --limit 50    # 1st + 2nd-degree only
+clinkedin search people "" --network F --industry "Financial Services"  # 1st-degree in an industry
 clinkedin search people "founder" --limit 25 --offset 25       # next page (items 25-49)
 clinkedin search people "founder" --json --output founders.json
 
@@ -58,6 +63,8 @@ clinkedin search posts "vector db" --json --output posts.json
 ```
 
 `--network` accepts a comma-separated subset of `F` (1st), `S` (2nd), `O` (3rd+); omit to search all. `--limit` defaults to 25 for people. Each result includes a `url` field (URN-form, e.g. `https://www.linkedin.com/in/ACoAA…/`) — LinkedIn redirects this to the canonical profile in the browser.
+
+`--industry` filters by industry, given as a LinkedIn industry name (e.g. `"Financial Services"`, resolved offline) or a raw numeric code; repeat the flag to match any of several. LinkedIn applies the filter server-side, so result rows don't carry the industry value (it filters but isn't displayed). Industry filtering needs network depth `F` to behave like "my connections in X" — and note that `search` reads LinkedIn's search index, which lags the relationship store, so a freshly removed connection can briefly still appear; use `clinkedin connections` for the authoritative, up-to-date list.
 
 Post search is implemented by **scraping** LinkedIn's web search-results page (Voyager doesn't expose a usable content-search endpoint). It returns `text` / `url` / `urn` per result, defaults to a `--limit` of 10, and only fetches the first page (~3–10 posts). Author, post date, and engagement counts are not extracted in v1. Comment search is **not** supported — LinkedIn doesn't expose it.
 
@@ -74,6 +81,67 @@ clinkedin login --cookie AQEDAR...    # paste li_at from your browser's DevTools
 ```
 
 DevTools → Application → Cookies → `https://www.linkedin.com` → copy the `li_at` value.
+
+## Queue (rate-limit-friendly bulk writes)
+
+Firing many write actions back-to-back (especially `connect`) trips LinkedIn's
+rate limits. Instead, **queue** them and let a scheduler drain the queue one job
+at a time. Every write command — `connect`, `disconnect`, `comment`, `post`,
+`message`, `follow`, `unfollow` — takes `--queue`:
+
+```sh
+clinkedin connect https://www.linkedin.com/in/<slug>/ --message "Hi" --queue
+clinkedin follow https://www.linkedin.com/company/<slug>/ --queue
+```
+
+`--queue` validates inputs and records the job to disk under
+`~/.config/clinkedin/queue/` **without touching LinkedIn**. Inspect and drain it:
+
+```sh
+clinkedin queue list                  # pending + dead-lettered jobs
+clinkedin queue run                   # execute the single oldest job, then exit
+clinkedin queue remove <id>           # drop a job
+clinkedin queue clear                 # drop all pending jobs
+clinkedin queue retry <id>            # move a failed job back to pending
+```
+
+`queue run` pops the **oldest** job (FIFO) and runs it non-interactively. A job
+that fails is retried on the next few runs and dead-lettered after 3 attempts
+(`queue list` shows the last error).
+
+Schedule it so a batch drips out over time:
+
+```sh
+clinkedin queue install   # launchd agent with anti-pattern defaults (see below)
+# then load it (printed for you):
+launchctl load -w ~/Library/LaunchAgents/com.clinkedin.queue.plist
+clinkedin queue uninstall # remove the agent
+```
+
+**Sends are jittered, not metronomic.** A fixed `*/5` tick firing 24/7 is an
+obvious automation signature. So the agent wakes often (every 60s) but the runner
+*gates* each send: a **randomized gap** between sends, an **active-hours** window,
+and an optional **daily cap**. `queue install` bakes in sensible defaults —
+5–20 min between sends, only 08:00–20:00 local, no daily cap — all overridable:
+
+```sh
+clinkedin queue install --min-interval 600 --max-interval 1800 \
+    --active-hours 9-18 --daily-cap 20      # slower, office hours, ≤20/day
+clinkedin queue install --active-hours none # run around the clock
+```
+
+The same gates are flags on `queue run`, so the cron equivalent (non-macOS) is
+the line printed by `queue install`:
+
+```cron
+* * * * * /abs/path/to/clinkedin queue run --min-interval 300 --max-interval 1200 --active-hours 8-20
+```
+
+**Caveats.** Jitter is cheap hardening against *naive timing-pattern* detection,
+not a cloak — the bigger risks are using the unofficial Voyager API at all and
+sheer volume. Even with a daily cap, ~288 wake-ups/day could in principle send far
+more than LinkedIn's ~100–200 invites/week, so keep volume human-plausible: set
+`--daily-cap`, and enqueue at most a week's worth of invites at a time.
 
 ## MCP server
 

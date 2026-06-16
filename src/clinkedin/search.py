@@ -15,13 +15,23 @@ def search_people(
     client,
     query: str,
     network_depths: list[str] | None = None,
+    industries: list[str] | None = None,
     limit: int | None = None,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    """Search LinkedIn people by keywords, optionally filtered by network depth."""
+    """Search LinkedIn people by keywords, optionally filtered by network depth.
+
+    `industries` is a list of LinkedIn industry codes; LinkedIn filters
+    server-side. Note the search index lags the relationship store, so a
+    1st-degree (network F) search can momentarily include people removed via
+    `clinkedin disconnect` — `clinkedin connections` reads the fresh dash source.
+    Resolved rows do not carry the industry field, so it filters but can't display.
+    """
     kwargs: dict[str, Any] = {"keywords": query}
     if network_depths:
         kwargs["network_depths"] = network_depths
+    if industries:
+        kwargs["industries"] = industries
     if limit is not None:
         kwargs["limit"] = limit
     if offset:
