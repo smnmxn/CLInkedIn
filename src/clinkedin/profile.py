@@ -12,6 +12,12 @@ class ProfileError(Exception):
     pass
 
 
+# The company feed (/feed/updates) wraps each post's renderable fields in this
+# decorated envelope under element["value"]; the member feed exposes them at the
+# top level. Helpers below look in both places.
+_UPDATE_V2 = "com.linkedin.voyager.feed.render.UpdateV2"
+
+
 def _walk(d: Any, *path: str) -> Any:
     cur = d
     for p in path:
@@ -197,6 +203,53 @@ def fetch_profile_posts(client, public_id: str, limit: int = 10) -> list[dict[st
     return elements
 
 
+def fetch_company_posts(client, slug: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Fetch a company's recent posts via Voyager.
+
+    Companies have no member URN, so we can't use the /identity/profileUpdatesV2
+    path that fetch_profile_posts uses. Instead we resolve the /company/<slug>
+    universal name to an org id (reusing follow.resolve_company_urn, which fails
+    loud if the company doesn't exist) and read its feed via /feed/updates with
+    q=companyFeedByUniversalName — the same query linkedin-api uses for company
+    updates. The elements come back in the same UpdateV2 shape as member posts,
+    so all the downstream formatting/filtering helpers apply unchanged.
+
+    An empty list is a valid result (the company has no posts).
+    """
+    from .follow import FollowError, resolve_company_urn
+
+    try:
+        resolve_company_urn(client, slug)
+    except FollowError as e:
+        raise ProfileError(str(e)) from e
+    params = {
+        "q": "companyFeedByUniversalName",
+        "companyUniversalName": slug,
+        "moduleKey": "member-share",
+        "count": min(limit, 100),
+        "start": 0,
+    }
+    res = client._fetch("/feed/updates", params=params)
+    if res.status_code != 200:
+        raise ProfileError(
+            f"Posts fetch failed for {slug} (HTTP {res.status_code}). "
+            "The company feed may be unavailable, or your session may be "
+            "rate-limited."
+        )
+    try:
+        data = res.json()
+    except ValueError as e:
+        raise ProfileError(f"Posts fetch returned non-JSON for {slug}.") from e
+    if not isinstance(data, dict):
+        raise ProfileError(f"Posts fetch returned unexpected shape for {slug}.")
+    elements = data.get("elements") or []
+    if not isinstance(elements, list):
+        raise ProfileError(f"Posts fetch returned unexpected elements for {slug}.")
+    # The company feed interleaves promoted/sponsored content with the company's
+    # own posts; drop the ads so the result is just the company's posts.
+    return [e for e in elements if isinstance(e, dict) and not e.get("isSponsored")]
+
+
 def _format_date(d: dict | None) -> str:
     if not d:
         return ""
@@ -329,8 +382,14 @@ def _post_age(post: dict[str, Any]) -> timedelta | None:
             return datetime.now(tz=timezone.utc) - ts
         except (ValueError, OverflowError, OSError):
             pass
+    # Company-feed posts nest the renderable fields in a decorated envelope; the
+    # relative time lives there rather than at the top level (see
+    # _extract_post_fields).
+    inner = _walk(post, "value", _UPDATE_V2) or {}
     sub = (
-        _walk(post, "actor", "subDescription", "accessibilityText")
+        _walk(inner, "actor", "subDescription", "accessibilityText")
+        or _walk(inner, "actor", "subDescription", "text")
+        or _walk(post, "actor", "subDescription", "accessibilityText")
         or _walk(post, "actor", "subDescription", "text")
         or ""
     )
@@ -351,13 +410,18 @@ def filter_posts_by_age(
 
 
 def _extract_post_fields(post: dict[str, Any]) -> dict[str, Any]:
-    text = (
-        _walk(post, "commentary", "text", "text")
-        or _walk(post, "value", "com.linkedin.voyager.feed.render.UpdateV2", "commentary", "text", "text")
-        or ""
-    )
-    urn = _walk(post, "updateMetadata", "urn") or post.get("urn") or ""
-    counts = _walk(post, "socialDetail", "totalSocialActivityCounts") or {}
+    # The /identity/profileUpdatesV2 (member) feed returns the UpdateV2 fields at
+    # the top level, while the /feed/updates (company) feed wraps them in a
+    # decorated envelope under value["...UpdateV2"]. Look in the inner envelope
+    # first, then fall back to the top level, so one extractor handles both.
+    inner = _walk(post, "value", _UPDATE_V2) or {}
+
+    def field(*path: str) -> Any:
+        return _walk(inner, *path) if _walk(inner, *path) is not None else _walk(post, *path)
+
+    text = field("commentary", "text", "text") or ""
+    urn = field("updateMetadata", "urn") or post.get("urn") or inner.get("urn") or ""
+    counts = field("socialDetail", "totalSocialActivityCounts") or {}
     likes = counts.get("numLikes") or 0
     comments = counts.get("numComments") or 0
 
@@ -371,16 +435,19 @@ def _extract_post_fields(post: dict[str, Any]) -> dict[str, Any]:
     if not date:
         # Modern Voyager feed responses don't expose absolute timestamps at the
         # top level; the relative time ("1d", "2w") is in actor.subDescription.
-        sub = _walk(post, "actor", "subDescription", "text") or ""
+        sub = field("actor", "subDescription", "text") or ""
         date = sub.split("•")[0].strip() or sub.strip()
 
+    url = post.get("permalink") or (
+        f"https://www.linkedin.com/feed/update/{urn}/" if urn else ""
+    )
     return {
         "date": date,
         "text": text,
         "like_count": likes,
         "comment_count": comments,
         "urn": urn,
-        "url": f"https://www.linkedin.com/feed/update/{urn}/" if urn else "",
+        "url": url,
     }
 
 

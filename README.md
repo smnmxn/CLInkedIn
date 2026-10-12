@@ -31,6 +31,7 @@ clinkedin comment https://www.linkedin.com/feed/update/urn:li:activity:N/ --mess
 clinkedin comment <url> --message-file ./reply.txt             # for longer text
 clinkedin comment <url> --message "..." --dry-run              # preview, send nothing
 
+clinkedin message https://www.linkedin.com/in/<slug>/ --message "Thanks for connecting!"   # DM a connection (reuses existing thread)
 clinkedin message https://www.linkedin.com/messaging/thread/2-.../ --message "On my way!"
 clinkedin message 2-...   --message-file ./reply.md            # reply into existing thread by bare id
 
@@ -50,6 +51,16 @@ clinkedin view https://www.linkedin.com/in/<slug>/ --posts                      
 clinkedin view https://www.linkedin.com/in/<slug>/ --posts --full               # full untruncated text
 clinkedin view https://www.linkedin.com/in/<slug>/ --posts --since 7d           # only posts from last 7 days
 clinkedin view https://www.linkedin.com/in/<slug>/ --posts --limit 25 --json    # raw Voyager post JSON
+clinkedin view https://www.linkedin.com/company/<slug>/ --posts                  # a company's recent posts (--posts only)
+clinkedin view https://www.linkedin.com/company/<slug>/ --posts --since 7d --json
+
+clinkedin feed                                                 # your home feed: Date · Author · Text · Likes · Comments · URL
+clinkedin feed --limit 25 --full                               # full untruncated text
+clinkedin feed --since 1d --json --output feed.json            # last day's posts as JSON
+
+clinkedin inbox                                                # recent conversations: time · who · last message · thread URL
+clinkedin inbox --unread --json                                # only threads with unread messages, as JSON
+clinkedin thread https://www.linkedin.com/messaging/thread/2-.../ --limit 50   # read a conversation, oldest first
 
 clinkedin search people "product manager fintech"              # Name · Headline · Location · URL
 clinkedin search people "designer" --network F,S --limit 50    # 1st + 2nd-degree only
@@ -75,6 +86,10 @@ anti-rate-limit strategy.
 `--network` accepts a comma-separated subset of `F` (1st), `S` (2nd), `O` (3rd+); omit to search all. `--limit` defaults to 25 for people. Each result includes a `url` field (URN-form, e.g. `https://www.linkedin.com/in/ACoAA…/`) — LinkedIn redirects this to the canonical profile in the browser.
 
 `--industry` filters by industry, given as a LinkedIn industry name (e.g. `"Financial Services"`, resolved offline) or a raw numeric code; repeat the flag to match any of several. LinkedIn applies the filter server-side, so result rows don't carry the industry value (it filters but isn't displayed). Industry filtering needs network depth `F` to behave like "my connections in X" — and note that `search` reads LinkedIn's search index, which lags the relationship store, so a freshly removed connection can briefly still appear; use `clinkedin connections` for the authoritative, up-to-date list.
+
+`inbox` lists your message conversations, most recent activity first (`--limit` defaults to 20, up to 5 pages of 20). `--unread` keeps only threads with unread messages. `thread` takes the same targets as `message` and prints the most recent `--limit` messages oldest-first, paging back as needed; attachments and shared posts show as a bracketed description. Both accept `--json` for normalized rows.
+
+`feed` reads your home feed in LinkedIn's "Recent" order (most recent activity first) with promoted posts removed; `--limit` defaults to 10. `--json` emits one normalized row per post (`date`, `author`, `author_headline`, `author_url`, `reason`, `text`, `like_count`, `comment_count`, `urn`, `url`), where `reason` is why the post surfaced (e.g. "Jane Doe likes this") and is empty for posts from people and companies you follow directly.
 
 Post search is implemented by **scraping** LinkedIn's web search-results page (Voyager doesn't expose a usable content-search endpoint). It returns `text` / `url` / `urn` per result, defaults to a `--limit` of 10, and only fetches the first page (~3–10 posts). Author, post date, and engagement counts are not extracted in v1. Comment search is **not** supported — LinkedIn doesn't expose it.
 
@@ -181,14 +196,21 @@ or any other MCP client:
 `linkedin_follow` and `linkedin_unfollow` take `profile_url` (member or company)
 and return `{"ok", "kind", "slug", "error"}`. `linkedin_list_following` takes
 optional `limit` / `offset` and returns `{"ok", "results", "error"}` where each
-result is `{"name", "kind", "public_id", "headline", "urn"}`. Auth is reused
+result is `{"name", "kind", "public_id", "headline", "urn"}`.
+`linkedin_list_conversations` takes `limit` / `unread_only` and
+`linkedin_read_conversation` takes `target` (thread URL, URN, or id) / `limit`;
+both return `{"ok", "results", "error"}` with the same rows as `inbox --json` /
+`thread --json`. `linkedin_send_message` takes `target` (profile URL/URN or
+thread URL/URN/id) and `message`, and returns `{"ok", "thread_id",
+"new_conversation", "error"}`. Auth is reused
 from the same Chrome/`session.json` flow as the CLI.
 
 ## Agent use (OpenClaw / Claude skills)
 
 A single portable skill at [`skills/clinkedin/`](skills/clinkedin/SKILL.md)
 covers the whole CLI — list/search connections, send/remove invites,
-follow/unfollow, view profiles and recent posts, and search people/posts.
+follow/unfollow, view profiles and recent posts, read the home feed and messages, and search
+people/posts.
 
 Point your agent framework at this `skills/` directory (or symlink
 `skills/clinkedin/` into its skills root) and the host will trigger it
