@@ -1,4 +1,4 @@
-"""Send a reply in an existing LinkedIn conversation.
+"""Send a LinkedIn direct message: reply in a thread, or message a profile.
 
 WHY this doesn't call linkedin_api's `client.send_message`: that wrapper hits
 the legacy `/voyager/api/messaging/conversations/<id>/events?action=create`
@@ -6,11 +6,11 @@ path, which now 500s for all keyVersions (probed 2026-05-10). LinkedIn has
 moved messaging to `voyagerMessagingDashMessengerMessages?action=createMessage`,
 captured live from the web app on 2026-05-11.
 
-Scope: this module supports REPLY to an existing conversation. Starting a
-brand-new conversation (no prior thread with the recipient) needs a different
-request shape that wasn't in the captured HAR; that's a follow-up once we
-have a fresh capture of "click Message on a stranger's profile, send first
-message" flow.
+The same createMessage action starts a brand-new conversation when the payload
+carries `hostRecipientUrns` instead of `message.conversationUrn` (captured
+2026-10-12 from "Message" on a profile with no prior thread). Profile targets
+mirror the web app: look up an existing thread with the recipient first and
+reply there; only start a new conversation when none exists.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import uuid
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from .invite import resolve_self_urn
+from .invite import parse_profile_url, resolve_profile_urn, resolve_self_urn
 
 
 class MessageError(Exception):
@@ -128,3 +128,96 @@ def send_message(
         return res.json()
     except ValueError:
         return {}
+
+
+_PROFILE_URN_RE = re.compile(r"^urn:li:fsd_profile:(ACoA[A-Za-z0-9_-]+)$")
+_NEW_CONV_URN_RE = re.compile(
+    r"urn:li:msg_conversation:\(urn:li:fsd_profile:ACoA[A-Za-z0-9_-]+,(2-[A-Za-z0-9+/=_-]+)\)"
+)
+
+
+def _profile_target(target: str) -> str | None:
+    """Return a profile identifier (vanity slug or ACoA id) if `target` names a
+    person rather than a thread, else None."""
+    raw = (target or "").strip()
+    m = _PROFILE_URN_RE.match(raw)
+    if m:
+        return m.group(1)
+    try:
+        return parse_profile_url(raw)
+    except ValueError:
+        return None
+
+
+def resolve_message_target(client, target: str) -> dict[str, Any]:
+    """Resolve any supported target to where a message should go.
+
+    Returns {"mailbox_urn", "thread_id", "recipient_urn", "label"}:
+      - thread targets: thread_id set, recipient_urn None.
+      - profile targets: recipient_urn set; thread_id is the existing 1:1
+        thread with that person, or None when a new conversation is needed.
+    Raises ValueError for unrecognised targets.
+    """
+    profile_id = _profile_target(target)
+    if profile_id is None:
+        mailbox_urn, thread_id = parse_thread_target(client, target)
+        return {
+            "mailbox_urn": mailbox_urn,
+            "thread_id": thread_id,
+            "recipient_urn": None,
+            "label": thread_id,
+        }
+
+    from .inbox import find_thread_with  # lazy: inbox imports this module
+
+    acoa = profile_id if profile_id.startswith("ACoA") else resolve_profile_urn(client, profile_id)
+    recipient_urn = f"urn:li:fsd_profile:{acoa}"
+    mailbox_urn = resolve_self_urn(client)
+    return {
+        "mailbox_urn": mailbox_urn,
+        "thread_id": find_thread_with(client, mailbox_urn, recipient_urn),
+        "recipient_urn": recipient_urn,
+        "label": profile_id,
+    }
+
+
+def start_conversation(
+    client,
+    mailbox_urn: str,
+    recipient_urn: str,
+    text: str,
+) -> str:
+    """POST a first message to `recipient_urn`, creating a new conversation.
+
+    Returns the new thread id when the response carries it, else "".
+    Raises MessageError on non-2xx (e.g. the recipient isn't a connection).
+    """
+    payload = {
+        "message": {
+            "body": {"attributes": [], "text": text},
+            "renderContentUnions": [],
+            "originToken": str(uuid.uuid4()),
+        },
+        "mailboxUrn": mailbox_urn,
+        "trackingId": _tracking_id(),
+        "dedupeByClientGeneratedToken": False,
+        "hostRecipientUrns": [recipient_urn],
+    }
+    res = client._post(
+        "/voyagerMessagingDashMessengerMessages",
+        params={"action": "createMessage"},
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "accept": "application/json",
+            "content-type": "text/plain;charset=UTF-8",
+        },
+    )
+    if not (200 <= res.status_code < 300):
+        body = (res.text or "").strip().replace("\n", " ")[:300]
+        raise MessageError(
+            f"New-conversation send to {recipient_urn} failed "
+            f"(HTTP {res.status_code}): {body or '<empty body>'}. "
+            "LinkedIn only allows free messages to 1st-degree connections."
+        )
+    m = _NEW_CONV_URN_RE.search(res.text or "")
+    return m.group(1) if m else ""

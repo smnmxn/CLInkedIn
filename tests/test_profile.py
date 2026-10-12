@@ -10,6 +10,7 @@ from clinkedin.profile import (
     _extract_post_fields,
     _format_period,
     _normalize_dash_profile,
+    fetch_company_posts,
     fetch_profile,
     fetch_profile_posts,
     filter_posts_by_age,
@@ -272,6 +273,103 @@ def test_fetch_profile_posts_non_200_on_posts_endpoint_raises():
     )
     with pytest.raises(ProfileError, match="HTTP 429"):
         fetch_profile_posts(client, "ada-lovelace")
+
+
+# ---------- fetch_company_posts ----------
+
+
+def _load_company_posts_response():
+    return json.loads((FIXTURES / "company_posts_response.json").read_text())
+
+
+def _company_lookup_response():
+    return _FakeResponse(
+        200,
+        body={"elements": [{"entityUrn": "urn:li:fs_normalized_company:1337420"}]},
+    )
+
+
+class _FakeCompanyClient:
+    """Routes the two URIs fetch_company_posts hits: the company-name lookup
+    (/organization/companies) and the company feed (/feed/updates)."""
+
+    def __init__(self, company=None, posts=None):
+        self._company = company
+        self._posts = posts
+        self.calls = []
+
+    def _fetch(self, uri, **kwargs):
+        self.calls.append({"uri": uri, "params": kwargs.get("params")})
+        if "organization/companies" in uri:
+            target = self._company
+        elif "feed/updates" in uri:
+            target = self._posts
+        else:
+            raise AssertionError(f"unexpected fetch: {uri}")
+        if isinstance(target, _FakeResponse):
+            return target
+        return _FakeResponse(200, target)
+
+
+def test_fetch_company_posts_success():
+    client = _FakeCompanyClient(
+        company=_company_lookup_response(),
+        posts=_load_company_posts_response(),
+    )
+    result = fetch_company_posts(client, "acme", limit=25)
+    assert isinstance(result, list)
+    # The fixture has 3 elements, one of which is a sponsored ad that's dropped.
+    assert len(result) == 2
+    assert all(not e.get("isSponsored") for e in result)
+    # Two calls: resolve the company universal name, then fetch its feed.
+    assert len(client.calls) == 2
+    assert "organization/companies" in client.calls[0]["uri"]
+    assert "feed/updates" in client.calls[1]["uri"]
+    params = client.calls[1]["params"]
+    assert params["q"] == "companyFeedByUniversalName"
+    assert params["companyUniversalName"] == "acme"
+    assert params["count"] == 25
+    # The decorated feed elements feed straight into the existing post formatter.
+    fields = _extract_post_fields(result[0])
+    assert "hiring" in fields["text"]
+    assert fields["like_count"] == 42
+    assert fields["comment_count"] == 5
+    assert fields["date"] == "2d"
+    assert fields["url"].endswith("urn:li:activity:7100000000000000001")
+
+
+def test_fetch_company_posts_empty_is_ok():
+    client = _FakeCompanyClient(
+        company=_company_lookup_response(),
+        posts={"elements": [], "metadata": {}, "paging": {}},
+    )
+    assert fetch_company_posts(client, "acme") == []
+
+
+def test_fetch_company_posts_unknown_company_raises():
+    client = _FakeCompanyClient(company={"elements": []})
+    with pytest.raises(ProfileError, match="No company found"):
+        fetch_company_posts(client, "nope")
+    # Should fail before hitting the feed endpoint.
+    assert len(client.calls) == 1
+
+
+def test_fetch_company_posts_non_200_on_feed_raises():
+    client = _FakeCompanyClient(
+        company=_company_lookup_response(),
+        posts=_FakeResponse(429, {"status": 429}),
+    )
+    with pytest.raises(ProfileError, match="HTTP 429"):
+        fetch_company_posts(client, "acme")
+
+
+def test_filter_posts_by_age_reads_company_envelope():
+    # A decorated company-feed element (relative time nested under value) must
+    # be age-filterable just like a member post.
+    posts = _load_company_posts_response()["elements"]
+    recent = filter_posts_by_age(posts, timedelta(days=3))  # keeps the "2d" post
+    assert len(recent) == 1
+    assert _extract_post_fields(recent[0])["date"] == "2d"
 
 
 def test_extract_post_fields_uses_relative_date_from_subdescription():

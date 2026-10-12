@@ -14,6 +14,9 @@ from .connections import fetch_connections, format_json, format_table
 from .disconnect import DisconnectError, remove_connection
 from .industries import IndustryError, resolve_industry
 from . import jobqueue
+from .feed import FeedError, fetch_feed
+from .feed import format_json as feed_format_json
+from .feed import format_text as feed_format_text
 from .follow import (
     FollowError,
     debug_following,
@@ -26,8 +29,18 @@ from .follow import (
 )
 from .follow import format_json as following_format_json
 from .follow import format_table as following_format_table
+from .inbox import InboxError, fetch_conversations, fetch_messages
+from .inbox import format_conversations as inbox_format_conversations
+from .inbox import format_json as inbox_format_json
+from .inbox import format_messages as inbox_format_messages
 from .invite import InviteError, parse_profile_url, send_invite
-from .message import MAX_MESSAGE_LEN, MessageError, parse_thread_target, send_message
+from .message import (
+    MAX_MESSAGE_LEN,
+    MessageError,
+    resolve_message_target,
+    send_message,
+    start_conversation,
+)
 from .post import MAX_BODY_LEN as _POST_MAX_BODY_LEN
 from .post import PostError, create_post
 from .posts import AuthExpiredError, PageShapeError
@@ -40,6 +53,7 @@ from .posts import search_posts
 from .profile import (
     ProfileError,
     debug_profile_posts,
+    fetch_company_posts,
     fetch_profile,
     fetch_profile_posts,
     filter_posts_by_age,
@@ -505,16 +519,22 @@ def _cmd_message(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        mailbox_urn, thread_id = parse_thread_target(client, args.target)
+        dest = resolve_message_target(client, args.target)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
-    except InviteError as e:
-        # resolve_self_urn raises InviteError for auth/lookup failures.
+    except (InviteError, InboxError) as e:
+        # Self/profile URN and existing-thread lookups raise these on auth/lookup failures.
         print(str(e), file=sys.stderr)
         return 1
 
-    print(f"Conversation: {thread_id}", flush=True)
+    mailbox_urn, thread_id = dest["mailbox_urn"], dest["thread_id"]
+    if dest["recipient_urn"] is None:
+        print(f"Conversation: {thread_id}", flush=True)
+    elif thread_id:
+        print(f"Recipient: {dest['label']} (existing conversation {thread_id})", flush=True)
+    else:
+        print(f"Recipient: {dest['label']} (new conversation)", flush=True)
     print(f"Message ({len(text)} chars):", flush=True)
     for line in text.split("\n"):
         print(f"  ┃ {line}", flush=True)
@@ -534,7 +554,10 @@ def _cmd_message(args: argparse.Namespace) -> int:
             return 0
 
     try:
-        send_message(client, mailbox_urn, thread_id, text)
+        if thread_id:
+            send_message(client, mailbox_urn, thread_id, text)
+        else:
+            thread_id = start_conversation(client, mailbox_urn, dest["recipient_urn"], text)
     except MessageError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -543,7 +566,7 @@ def _cmd_message(args: argparse.Namespace) -> int:
         print("If this looks like a session error, run 'clinkedin login' again.", file=sys.stderr)
         return 1
 
-    print(f"Message sent to {thread_id}")
+    print(f"Message sent to {thread_id or dest['label']}")
     return 0
 
 
@@ -649,10 +672,22 @@ def _cmd_following(args: argparse.Namespace) -> int:
 
 def _cmd_view(args: argparse.Namespace) -> int:
     try:
-        public_id = parse_profile_url(args.url)
+        kind, slug = parse_follow_url(args.url)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
+
+    # Companies have no bio/experience view and no debug probe — they only
+    # support --posts (read via the company feed, not the member endpoints).
+    if kind == "company" and not args.posts:
+        print(
+            "Company URLs only support --posts. Try: "
+            f"clinkedin view {args.url} --posts",
+            file=sys.stderr,
+        )
+        return 2
+
+    public_id = slug
 
     try:
         client = make_client()
@@ -660,7 +695,7 @@ def _cmd_view(args: argparse.Namespace) -> int:
         print(str(e), file=sys.stderr)
         return 1
 
-    if args.posts and args.debug:
+    if args.posts and args.debug and kind == "member":
         print(f"[debug] probing /identity/profiles/{public_id}/profileView ...", file=sys.stderr, flush=True)
         try:
             info = debug_profile_posts(client, public_id, limit=args.limit)
@@ -695,7 +730,10 @@ def _cmd_view(args: argparse.Namespace) -> int:
             # larger window to keep --limit meaningful as a "show me up to N
             # recent posts within the last X" cap.
             fetch_limit = args.limit * 5 if max_age is not None else args.limit
-            posts = fetch_profile_posts(client, public_id, limit=fetch_limit)
+            if kind == "company":
+                posts = fetch_company_posts(client, slug, limit=fetch_limit)
+            else:
+                posts = fetch_profile_posts(client, public_id, limit=fetch_limit)
             if max_age is not None:
                 posts = filter_posts_by_age(posts, max_age)
             posts = posts[: args.limit]
@@ -716,6 +754,114 @@ def _cmd_view(args: argparse.Namespace) -> int:
             rendered = profile_format_posts_text(posts, full=args.full)
     else:
         rendered = profile_format_json(profile) if args.json else profile_format_text(profile)
+    if args.output:
+        Path(args.output).write_text(rendered)
+    else:
+        print(rendered)
+    return 0
+
+
+def _cmd_feed(args: argparse.Namespace) -> int:
+    if args.limit < 1:
+        print(f"--limit must be >= 1 (got {args.limit}).", file=sys.stderr)
+        return 2
+
+    max_age = None
+    if args.since:
+        max_age = parse_age(args.since)
+        if max_age is None:
+            print(
+                f"Could not parse --since {args.since!r}. Try formats like "
+                "'1h', '1d', '7d', '2w'.",
+                file=sys.stderr,
+            )
+            return 2
+
+    try:
+        client = make_client()
+    except NotAuthenticatedError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    try:
+        # Same over-fetch as 'view --posts --since': the age filter may discard
+        # most results, so widen the window to keep --limit meaningful.
+        fetch_limit = args.limit * 5 if max_age is not None else args.limit
+        posts = fetch_feed(client, limit=fetch_limit)
+    except FeedError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Feed fetch failed: {e}", file=sys.stderr)
+        print("If this looks like a session error, run 'clinkedin login' again.", file=sys.stderr)
+        return 1
+
+    if max_age is not None:
+        posts = filter_posts_by_age(posts, max_age)
+    posts = posts[: args.limit]
+
+    rendered = feed_format_json(posts) if args.json else feed_format_text(posts, full=args.full)
+    if args.output:
+        Path(args.output).write_text(rendered)
+    else:
+        print(rendered)
+    return 0
+
+
+def _cmd_inbox(args: argparse.Namespace) -> int:
+    if args.limit < 1:
+        print(f"--limit must be >= 1 (got {args.limit}).", file=sys.stderr)
+        return 2
+
+    try:
+        client = make_client()
+    except NotAuthenticatedError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    try:
+        rows = fetch_conversations(client, limit=args.limit, unread_only=args.unread)
+    except (InboxError, InviteError) as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Inbox fetch failed: {e}", file=sys.stderr)
+        print("If this looks like a session error, run 'clinkedin login' again.", file=sys.stderr)
+        return 1
+
+    rendered = inbox_format_json(rows) if args.json else inbox_format_conversations(rows)
+    if args.output:
+        Path(args.output).write_text(rendered)
+    else:
+        print(rendered)
+    return 0
+
+
+def _cmd_thread(args: argparse.Namespace) -> int:
+    if args.limit < 1:
+        print(f"--limit must be >= 1 (got {args.limit}).", file=sys.stderr)
+        return 2
+
+    try:
+        client = make_client()
+    except NotAuthenticatedError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    try:
+        rows = fetch_messages(client, args.target, limit=args.limit)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except (InboxError, InviteError) as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Thread fetch failed: {e}", file=sys.stderr)
+        print("If this looks like a session error, run 'clinkedin login' again.", file=sys.stderr)
+        return 1
+
+    rendered = inbox_format_json(rows) if args.json else inbox_format_messages(rows)
     if args.output:
         Path(args.output).write_text(rendered)
     else:
@@ -788,6 +934,9 @@ _DISPATCH = {
     "unfollow": _cmd_unfollow,
     "following": _cmd_following,
     "view": _cmd_view,
+    "feed": _cmd_feed,
+    "inbox": _cmd_inbox,
+    "thread": _cmd_thread,
     "reactions": _cmd_reactions,
 }
 
@@ -902,7 +1051,7 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=_fmt,
         description=(
             "CLInkedIn — a personal CLI for your LinkedIn account.\n"
-            "List your connections and send connection requests from the terminal."
+            "Manage connections, messages, posts, comments and follows from the terminal."
         ),
         epilog=(
             "Examples:\n"
@@ -915,6 +1064,9 @@ def main(argv: list[str] | None = None) -> int:
             "  clinkedin comment https://www.linkedin.com/feed/update/urn:li:activity:7…/ \\\n"
             "      --message 'Great point — agreed'\n"
             "  clinkedin post --message 'Shipping v2 today' --image ~/Pictures/launch.png\n"
+            "  clinkedin inbox --unread\n"
+            "  clinkedin thread https://www.linkedin.com/messaging/thread/2-…/ --limit 50\n"
+            "  clinkedin message https://www.linkedin.com/in/<slug>/ --message 'Thanks for connecting!'\n"
             "  clinkedin message https://www.linkedin.com/messaging/thread/2-…/ \\\n"
             "      --message 'On my way!' --yes\n"
             "  clinkedin follow https://www.linkedin.com/in/<slug>/ --yes\n"
@@ -923,6 +1075,8 @@ def main(argv: list[str] | None = None) -> int:
             "  clinkedin following --limit 50\n"
             "  clinkedin view https://www.linkedin.com/in/<slug>/\n"
             "  clinkedin view https://www.linkedin.com/in/<slug>/ --posts --limit 25\n"
+            "  clinkedin feed                            your home feed, most recent first\n"
+            "  clinkedin feed --since 1d --full\n"
             "  clinkedin search people 'product manager fintech'\n"
             "  clinkedin search people 'designer' --network F,S --limit 50\n"
             "  clinkedin search people '' --network F --industry 'Financial Services'\n"
@@ -989,11 +1143,13 @@ def main(argv: list[str] | None = None) -> int:
     po.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
     po.add_argument("--queue", action="store_true", help="Add to the queue instead of publishing now")
 
-    mg = sub.add_parser("message", help="Reply in an existing LinkedIn conversation")
+    mg = sub.add_parser("message", help="Message a connection, or reply in an existing conversation")
     mg.add_argument(
         "target",
         help=(
-            "Conversation target: thread URL (https://www.linkedin.com/messaging/thread/2-…/), "
+            "Profile URL (https://www.linkedin.com/in/<slug>/) or urn:li:fsd_profile:ACoA… — "
+            "replies in the existing thread with that person, or starts one; "
+            "or a thread URL (https://www.linkedin.com/messaging/thread/2-…/), "
             "full urn:li:msg_conversation:(…) URN, or bare 2-… thread id"
         ),
     )
@@ -1022,10 +1178,10 @@ def main(argv: list[str] | None = None) -> int:
     fg.add_argument("--output", type=str, default=None, help="Write to FILE instead of stdout")
     fg.add_argument("--debug", action="store_true", help="Probe candidate Voyager endpoints and dump raw responses")
 
-    v = sub.add_parser("view", help="View a LinkedIn profile (name, headline, experience, education)")
-    v.add_argument("url", help="LinkedIn profile URL (https://www.linkedin.com/in/<slug>/)")
+    v = sub.add_parser("view", help="View a LinkedIn profile (name, headline, experience, education) or a company's posts")
+    v.add_argument("url", help="LinkedIn profile (/in/<slug>) or company (/company/<slug>, --posts only) URL")
     v.add_argument("--json", action="store_true", help="Output raw JSON")
-    v.add_argument("--posts", action="store_true", help="Show the profile's recent posts instead of bio/experience")
+    v.add_argument("--posts", action="store_true", help="Show recent posts instead of bio/experience (required for company URLs)")
     v.add_argument("--limit", type=int, default=10, help="Max posts to fetch with --posts (default 10)")
     v.add_argument("--full", action="store_true", help="With --posts: print full untruncated text (multi-line per post)")
     v.add_argument(
@@ -1037,6 +1193,37 @@ def main(argv: list[str] | None = None) -> int:
     )
     v.add_argument("--debug", action="store_true", help="With --posts: print the raw /identity/profileUpdatesV2 response")
     v.add_argument("--output", type=str, default=None, help="Write to FILE instead of stdout")
+
+    fd = sub.add_parser("feed", help="Show your home feed (most recent first, promoted posts removed)")
+    fd.add_argument("--limit", type=int, default=10, help="Max posts to show (default 10)")
+    fd.add_argument("--full", action="store_true", help="Print full untruncated text (multi-line per post)")
+    fd.add_argument(
+        "--since",
+        type=str,
+        default=None,
+        metavar="AGE",
+        help="Keep only posts at most AGE old (e.g. 1h, 1d, 7d, 2w)",
+    )
+    fd.add_argument("--json", action="store_true", help="Output JSON (one normalized row per post)")
+    fd.add_argument("--output", type=str, default=None, help="Write to FILE instead of stdout")
+
+    ib = sub.add_parser("inbox", help="List your message conversations (most recent first)")
+    ib.add_argument("--limit", type=int, default=20, help="Max conversations to show (default 20)")
+    ib.add_argument("--unread", action="store_true", help="Only show conversations with unread messages")
+    ib.add_argument("--json", action="store_true", help="Output JSON (one normalized row per conversation)")
+    ib.add_argument("--output", type=str, default=None, help="Write to FILE instead of stdout")
+
+    th = sub.add_parser("thread", help="Read the messages in a conversation (oldest first)")
+    th.add_argument(
+        "target",
+        help=(
+            "Conversation target: thread URL (https://www.linkedin.com/messaging/thread/2-…/), "
+            "full urn:li:msg_conversation:(…) URN, or bare 2-… thread id"
+        ),
+    )
+    th.add_argument("--limit", type=int, default=20, help="Max most-recent messages to show (default 20)")
+    th.add_argument("--json", action="store_true", help="Output JSON (one normalized row per message)")
+    th.add_argument("--output", type=str, default=None, help="Write to FILE instead of stdout")
 
     rx = sub.add_parser("reactions", help="List people who liked/commented on a post (with profile URLs)")
     rx.add_argument("url", help="LinkedIn post URL or urn:li:activity:<id>")

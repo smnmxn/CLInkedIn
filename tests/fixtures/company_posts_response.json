@@ -1,0 +1,98 @@
+{
+  "metadata": {
+    "paginationToken": ""
+  },
+  "elements": [
+    {
+      "urn": "urn:li:activity:7100000000000000001",
+      "isSponsored": false,
+      "permalink": "https://www.linkedin.com/feed/update/urn:li:activity:7100000000000000001",
+      "value": {
+        "com.linkedin.voyager.feed.render.UpdateV2": {
+          "updateMetadata": {
+            "urn": "urn:li:activity:7100000000000000001"
+          },
+          "commentary": {
+            "text": {
+              "text": "We're hiring across engineering, design, and go-to-market. Come build the future of developer tooling with us."
+            }
+          },
+          "socialDetail": {
+            "totalSocialActivityCounts": {
+              "numLikes": 42,
+              "numComments": 5
+            }
+          },
+          "actor": {
+            "subDescription": {
+              "text": "2d •   ",
+              "accessibilityText": "2 days ago"
+            }
+          }
+        }
+      }
+    },
+    {
+      "urn": "urn:li:sponsoredContentV2:(urn:li:inAppPromotion:16342,urn:li:sponsoredCreative:748027424)",
+      "isSponsored": true,
+      "value": {
+        "com.linkedin.voyager.feed.render.UpdateV2": {
+          "updateMetadata": {
+            "urn": "urn:li:sponsoredContentV2:(urn:li:inAppPromotion:16342,urn:li:sponsoredCreative:748027424)"
+          },
+          "commentary": {
+            "text": {
+              "text": "Promoted: try our paid product today."
+            }
+          },
+          "socialDetail": {
+            "totalSocialActivityCounts": {
+              "numLikes": 0,
+              "numComments": 0
+            }
+          },
+          "actor": {
+            "subDescription": {
+              "text": "Promoted",
+              "accessibilityText": "Promoted"
+            }
+          }
+        }
+      }
+    },
+    {
+      "urn": "urn:li:activity:7100000000000000002",
+      "isSponsored": false,
+      "permalink": "https://www.linkedin.com/feed/update/urn:li:activity:7100000000000000002",
+      "value": {
+        "com.linkedin.voyager.feed.render.UpdateV2": {
+          "updateMetadata": {
+            "urn": "urn:li:activity:7100000000000000002"
+          },
+          "commentary": {
+            "text": {
+              "text": "Our v2 platform is now generally available. Read the launch notes on our blog."
+            }
+          },
+          "socialDetail": {
+            "totalSocialActivityCounts": {
+              "numLikes": 128,
+              "numComments": 12
+            }
+          },
+          "actor": {
+            "subDescription": {
+              "text": "1w •   ",
+              "accessibilityText": "1 week ago"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "paging": {
+    "start": 0,
+    "count": 3,
+    "total": 3
+  }
+}

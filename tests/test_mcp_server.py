@@ -99,3 +99,58 @@ def test_client_is_cached(monkeypatch):
     tool(VALID_URL)
 
     assert call_count["n"] == 1
+
+
+def test_list_conversations(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_client", object())
+    seen = {}
+
+    def fake(client, limit, unread_only):
+        seen.update(limit=limit, unread_only=unread_only)
+        return [{"thread_id": "2-x"}]
+
+    monkeypatch.setattr(mcp_server, "fetch_conversations", fake)
+    out = mcp_server.linkedin_list_conversations(limit=5, unread_only=True)
+    assert out == {"ok": True, "results": [{"thread_id": "2-x"}]}
+    assert seen == {"limit": 5, "unread_only": True}
+
+
+def test_read_conversation_bad_target(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_client", object())
+
+    def fake(client, target, limit):
+        raise ValueError("Not a recognised conversation target")
+
+    monkeypatch.setattr(mcp_server, "fetch_messages", fake)
+    out = mcp_server.linkedin_read_conversation("nope")
+    assert out["ok"] is False
+    assert "invalid target" in out["error"]
+
+
+def test_send_message_new_conversation(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_client", object())
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_message_target",
+        lambda c, t: {"mailbox_urn": "me", "thread_id": None, "recipient_urn": "urn:r", "label": "x"},
+    )
+    monkeypatch.setattr(mcp_server, "start_conversation", lambda c, m, r, text: "2-new")
+    out = mcp_server.linkedin_send_message("https://www.linkedin.com/in/x/", "hi")
+    assert out == {"ok": True, "thread_id": "2-new", "new_conversation": True}
+
+
+def test_send_message_existing_thread(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_client", object())
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_message_target",
+        lambda c, t: {"mailbox_urn": "me", "thread_id": "2-old", "recipient_urn": None, "label": "2-old"},
+    )
+    sent = []
+    monkeypatch.setattr(mcp_server, "send_message", lambda c, m, t, text: sent.append(t))
+    out = mcp_server.linkedin_send_message("2-old", "hi")
+    assert out["ok"] and out["new_conversation"] is False and sent == ["2-old"]
+
+
+def test_send_message_empty():
+    assert mcp_server.linkedin_send_message("2-x", "  ")["ok"] is False

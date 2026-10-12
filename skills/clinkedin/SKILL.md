@@ -1,6 +1,6 @@
 ---
 name: clinkedin
-description: Operate on the user's own LinkedIn account from the terminal. Use when the user wants to list/search their connections, send or remove connection invites, follow/unfollow people or companies, view a profile (bio or recent posts), search LinkedIn for people or posts, publish a new feed post (text and optional single image), post a public comment on a LinkedIn post, or reply in an existing direct-message conversation. Also use when the user wants to queue or schedule write actions to drip out over time and avoid rate limits (bulk invites, etc.) via `--queue` and the `clinkedin queue` runner. Authenticated via the user's Chrome session — no API key. Includes destructive operations (invite, disconnect, post, comment, message) which require explicit confirmation.
+description: Operate on the user's own LinkedIn account from the terminal. Use when the user wants to list/search their connections, send or remove connection invites, follow/unfollow people or companies, view a profile (bio or recent posts), view a company page's recent posts, read their home feed, list their message inbox or read a conversation, search LinkedIn for people or posts, publish a new feed post (text and optional single image), post a public comment on a LinkedIn post, or send a direct message (to a connection by profile URL, or as a reply in an existing conversation). Also use when the user wants to queue or schedule write actions to drip out over time and avoid rate limits (bulk invites, etc.) via `--queue` and the `clinkedin queue` runner. Authenticated via the user's Chrome session — no API key. Includes destructive operations (invite, disconnect, post, comment, message) which require explicit confirmation.
 ---
 
 # clinkedin
@@ -60,7 +60,7 @@ clinkedin view https://www.linkedin.com/in/<slug>/ --json      # raw Voyager Das
 
 **Known regression:** Experience and education are not currently shown — LinkedIn deprecated the legacy `/profileView` endpoint and the dash endpoint we use doesn't include those sections. The output includes a hint pointing this out. The raw JSON (`--json`) does include nested URNs (`experienceCardUrn`) that could be fetched separately.
 
-### View a profile's recent posts
+### View a profile's or company's recent posts
 
 ```sh
 clinkedin view https://www.linkedin.com/in/<slug>/ --posts                  # 10 posts, single-line each
@@ -68,9 +68,15 @@ clinkedin view https://www.linkedin.com/in/<slug>/ --posts --limit 25       # mo
 clinkedin view https://www.linkedin.com/in/<slug>/ --posts --full           # full untruncated text, multi-line per post
 clinkedin view https://www.linkedin.com/in/<slug>/ --posts --since 7d       # only posts from last 7 days
 clinkedin view https://www.linkedin.com/in/<slug>/ --posts --json           # raw post elements
+clinkedin view https://www.linkedin.com/company/<slug>/ --posts             # a company page's recent posts
+clinkedin view https://www.linkedin.com/company/<slug>/ --posts --since 7d --json
 ```
 
+`view` accepts both member (`/in/<slug>`) and company (`/company/<slug>`) URLs. **Company URLs are `--posts`-only** — there's no bio/experience view for an organization, so `clinkedin view <company-url>` without `--posts` prints a hint and exits 2. All the same flags (`--full`, `--since`, `--limit`, `--json`) work for both. Sponsored/promoted ads that LinkedIn interleaves into the company feed are filtered out; `--json` returns the raw (decorated) feed elements.
+
 Default text format: `date · "text (≤120 chars)" · N likes · M comments · url`. With `--full`: a header line followed by the full body, separated by `---`. Dates are relative ("1d", "2w", "3mo") since modern Voyager responses don't expose absolute timestamps at the top level.
+
+**Cost (company posts):** two Voyager calls — one `/organization/companies` lookup to resolve the `/company/<slug>` universal name (fails loud if the company doesn't exist), then one `/feed/updates?q=companyFeedByUniversalName` read. Member posts use the `/identity/profileUpdatesV2` path instead.
 
 `--since` accepts forms like `30m`, `5h`, `1d`, `7d`, `2w`, `3mo`, `1y`, or longer phrases like `"6 months ago"`. Filtering is approximate at the day level (months treated as 30 days, years as 365) because LinkedIn only exposes relative dates. When `--since` is set the CLI fetches up to 5× `--limit` from Voyager so that filtering doesn't silently empty the result. Posts whose age can't be parsed are dropped.
 
@@ -86,6 +92,39 @@ clinkedin view <url> --posts --since 1mo --limit 20 --full
 # JSON for downstream filtering / summarization
 clinkedin view <url> --posts --since 1mo --limit 50 --json --output posts.json
 ```
+
+### Read the home feed
+
+```sh
+clinkedin feed                                  # 10 posts, single-line each
+clinkedin feed --limit 25 --full                # full untruncated text, multi-line per post
+clinkedin feed --since 1d                       # only posts from the last day
+clinkedin feed --since 1d --json --output feed.json
+```
+
+The user's own home feed in LinkedIn's "Recent" order (most recent *activity* first — a week-old post can sit at the top because a connection just liked it). Promoted posts are filtered out. `--since` takes the same forms as `view --posts --since` and filters on the post's own age.
+
+Default text format: `date · author · "text (≤120 chars)" · N likes · M comments · url`. With `--full`: a header line, then the reason the post surfaced in parentheses (e.g. `(Jane Doe likes this)`, omitted for posts from people/companies the user follows directly), then the full body, separated by `---`.
+
+Unlike `view --posts --json` (raw Voyager elements), `feed --json` emits **normalized rows** — a raw feed element is ~40 KB of rendering metadata per post. Fields: `date` (relative, e.g. `1h`), `author`, `author_headline`, `author_url`, `reason`, `text`, `like_count`, `comment_count`, `urn`, `url`.
+
+**Cost:** one Voyager call (`/feed/updatesV2?q=chronFeed`) for up to ~95 posts; more only when `--limit` (or `--since`, which fetches 5× `--limit`) needs a further page, hard-capped at 5 calls per invocation.
+
+### Read messages
+
+```bash
+clinkedin inbox                                 # 20 most recent conversations
+clinkedin inbox --unread                        # only threads with unread messages
+clinkedin inbox --limit 50 --json               # normalized rows for filtering/summarizing
+clinkedin thread https://www.linkedin.com/messaging/thread/2-…/            # last 20 messages, oldest first
+clinkedin thread 2-… --limit 60 --json
+```
+
+`inbox` text output: `time  [N unread] Name`, then `Sender: last message`, then the thread URL — pass that URL to `thread` to read it or to `message` to reply. `--json` fields: `thread_id`, `conversation_urn`, `url`, `title`, `participants` (`name`, `headline`, `url`, `urn`; excludes the user), `group`, `unread_count`, `read`, `last_activity_at`, `last_sender`, `last_sender_is_me`, `last_message`. `thread --json` fields: `sent_at`, `sender`, `sender_url`, `sender_urn`, `text`, `urn`. Attachments, GIFs and shared posts appear as `[description]`.
+
+Reading does **not** mark messages as read. `--unread` filters client-side, so it may page further to fill `--limit`.
+
+**Cost:** `inbox` is one Voyager messaging-GraphQL call per 20 conversations (hard cap 5); `thread` is one call per 20 messages (hard cap 5). If either starts failing with HTTP 400/500, LinkedIn has likely rotated the queryId — see `src/clinkedin/inbox.py` for how to re-capture.
 
 ### Search people
 
@@ -122,9 +161,68 @@ clinkedin connect https://www.linkedin.com/in/<slug>/                           
 clinkedin connect https://www.linkedin.com/in/<slug>/ --message "Hi, met at X"       # ≤300 chars
 clinkedin connect https://www.linkedin.com/in/<slug>/ --dry-run                      # parse the URL, do nothing
 clinkedin connect https://www.linkedin.com/in/<slug>/ --yes                          # skip the Y/N prompt
+clinkedin connect https://www.linkedin.com/in/<slug>/ --message "..." --queue        # ENQUEUE only, send nothing now
 ```
 
 Free-account limits are tight: ~5 invites with notes per week, ~100–200 invites total per week. Hitting the limit silently fails — the API doesn't return a clear error.
+
+### The send queue (`clinkedin queue ...`) — the safe way to batch invites
+
+`--queue` on `connect` does NOT send. It appends the invite to a local persistent
+job queue and exits immediately (zero Voyager calls, so it never touches the
+rate-limited session). This is how you decouple ENQUEUE (cheap, batchable, safe to
+loop) from SEND (rate-limited, must be slow and jittered). Enqueue a whole batch at
+once; drain it one invite at a time on a throttled schedule.
+
+Queue management subcommands:
+
+```sh
+clinkedin queue list                       # pending + dead-lettered jobs
+clinkedin queue run                        # execute the OLDEST queued job and EXIT (one send per call)
+clinkedin queue run --min-interval 1800 --max-interval 7200 \
+    --active-hours 8-20 --daily-cap 1      # one send, only if throttle / hours / cap allow
+clinkedin queue retry <id>                 # move a dead-lettered (failed) job back to pending
+clinkedin queue remove <id>                # delete one job (any state)
+clinkedin queue clear                      # delete ALL pending jobs
+clinkedin queue install --interval 60 --min-interval 300 --max-interval 1200 \
+    --active-hours 8-20 --daily-cap 5      # install a launchd agent that drains the queue on a schedule
+clinkedin queue uninstall                  # remove that launchd agent
+```
+
+`queue run` flags enforce the safety model at the DRAIN, not the enqueue:
+`--min-interval`/`--max-interval` jitter the gap between sends; `--active-hours
+START-END` only sends in local business hours; `--daily-cap N` stops after N sends
+that day (0 = uncapped). A single `queue run` sends at most one invite. Drive it
+either with clinkedin's own launchd agent (`queue install`) or an external scheduler
+calling `queue run` per tick. Because the noted-invite cap on a free account is ~5/week,
+set `--daily-cap` LOW (e.g. 1) so a week's worth of enqueued invites bleeds out
+slowly rather than burning the weekly allowance in a day.
+
+**macOS caveat — prefer cron over the launchd agent for the drain.** On some Macs
+the `StartInterval` timer in the agent that `queue install` writes never fires on its
+own: launchd coalesces/defers it indefinitely, so the queue silently never drains
+(symptom: `launchctl print gui/$(id -u)/com.clinkedin.queue` shows `runs = 0` and
+`pended nondemand spawn = interval`, yet `launchctl kickstart` runs the job fine). If
+you hit this, drive the drain from cron instead — `queue install` already prints the
+equivalent line. Drop the launchd agent (`launchctl bootout gui/$(id -u)/com.clinkedin.queue`
+then delete the plist) and add a per-minute crontab entry; the runner self-gates, so
+waking every minute is correct:
+
+```sh
+* * * * * /Users/<you>/.local/bin/clinkedin queue run --min-interval 300 --max-interval 1200 --active-hours 8-20 --daily-cap 5 >> ~/.config/clinkedin/queue/runner.log 2>&1
+```
+
+The runner uses the cached session cookie (`~/.config/clinkedin/session.json`), so the
+cron job needs no Chrome/Keychain access to send. Verify it fires by watching
+`runner.log` grow on the next minute boundary.
+
+Pattern: a producer enqueues `connect ... --queue` for a vetted list (safe, no
+session calls); a slow drain (`queue run` on a tick, or the installed launchd agent)
+does the actual sending under the caps. NEVER loop `connect` WITHOUT `--queue` — that
+bursts Voyager and 401-locks the session. The queue is the sanctioned way to
+"schedule" invites despite the don't-schedule-clinkedin rule below: that rule is about
+bursting the READ/WRITE Voyager calls, and the queue's whole job is to throttle exactly
+that.
 
 ### Remove an existing connection
 
@@ -173,27 +271,28 @@ Posts are **public, persistent, notify followers, and have no API delete** — r
 
 To unblock: open linkedin.com in Chrome → DevTools → Network → "Preserve log" → create a text post and a single-image post → "Save all as HAR" → share the HAR file. One commit then wires the SDUI request id and payload shape into `post.py`.
 
-### Send a direct message (reply only)
+### Send a direct message
 
 ```sh
-clinkedin message https://www.linkedin.com/messaging/thread/2-…/ --message "On my way!"
+clinkedin message https://www.linkedin.com/in/<slug>/ --message "Thanks for connecting!"   # message a person
+clinkedin message https://www.linkedin.com/messaging/thread/2-…/ --message "On my way!"   # reply in a thread
 clinkedin message urn:li:msg_conversation:(urn:li:fsd_profile:ACoA…,2-…) --message "…"
 clinkedin message 2-…    --message-file ./reply.md       # bare thread id form
-clinkedin message <target> --message "…" --dry-run        # preview, send nothing
+clinkedin message <target> --message "…" --dry-run        # preview (shows existing vs new conversation), send nothing
 clinkedin message <target> --message "…" --yes            # skip Y/N prompt
+clinkedin message <target> --message "…" --queue          # defer to the send queue
 ```
 
-Accepted target forms (all resolve to the same conversation):
+Accepted targets:
 
-- A LinkedIn messaging URL: `https://www.linkedin.com/messaging/thread/2-…/`
-- A full conversation URN: `urn:li:msg_conversation:(urn:li:fsd_profile:ACoA…,2-…)`
-- A bare thread id starting with `2-` (combined with the logged-in user's mailbox)
+- **A person:** `https://www.linkedin.com/in/<slug>/`, `https://www.linkedin.com/in/ACoA…/` (as in `inbox --json` participant URLs), or `urn:li:fsd_profile:ACoA…`. Like the web app's Message button, this first looks up an existing 1:1 thread with that person and replies there; only if none exists does it start a new conversation. The preview line says which (`existing conversation 2-…` vs `new conversation`).
+- **A conversation:** messaging URL `https://www.linkedin.com/messaging/thread/2-…/`, full URN `urn:li:msg_conversation:(…)`, or bare `2-…` thread id.
 
-**Scope: reply-only.** This command sends into an **existing** conversation; it cannot start a brand-new thread with a recipient who has no prior conversation with the user. (The "first message to a stranger" payload shape is different and wasn't in the captured HAR — needs a fresh capture before it can be wired up.) If the user asks to "DM someone we've never messaged before," tell them this and suggest opening the thread once in the LinkedIn web UI first, then reusing the URL here.
+New conversations only work for **1st-degree connections** — messaging anyone else needs InMail, which isn't supported; LinkedIn rejects the send and the command exits 1 with the HTTP error. To find a thread to reply to, use `clinkedin inbox`.
 
-Messages are **private, persistent, and notify the recipient** (push + email). Always show the user the exact text and confirm before sending — prefer the interactive prompt over `--yes` unless the user explicitly authorized that exact text. Plain text only; no attachments, mentions, or rich content in v1.
+Messages are **private, persistent, and notify the recipient** (push + email). Always show the user the exact text and confirm before sending — prefer the interactive prompt over `--yes` unless the user explicitly authorized that exact text. Run `--dry-run` first when messaging a person so the user can see whether it continues an old thread. Plain text only; no attachments, mentions, or rich content in v1.
 
-**Cost:** one POST to `/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage` (plus one `/me` lookup the first time per session, cached after). Captured live 2026-05-11; this bypasses `linkedin-api`'s dead `client.send_message` wrapper (the legacy `/messaging/conversations/<id>/events` path 500s).
+**Cost:** one POST to `/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage` (plus one `/me` lookup the first time per session, cached after). Person targets add a profile lookup (skipped for ACoA forms) and one existing-thread GraphQL lookup. Reply payload captured live 2026-05-11; new-conversation payload (`hostRecipientUrns`) captured 2026-10-12.
 
 ### Follow / unfollow
 
@@ -238,7 +337,7 @@ clinkedin queue remove <id> | clinkedin queue clear | clinkedin queue retry <id>
 
 ## Choosing output format
 
-- For human-readable summaries: omit `--json`. Use `--full` on `view --posts` if the user wants to read post bodies.
+- For human-readable summaries: omit `--json`. Use `--full` on `view --posts` or `feed` if the user wants to read post bodies.
 - For programmatic use (filtering, exporting, feeding into other tools): always pass `--json`. Pair with `--output <path>` to keep large results out of stdout.
 - Exit codes: `0` success, `1` runtime/auth failure, `2` argument error.
 
@@ -246,7 +345,7 @@ clinkedin queue remove <id> | clinkedin queue clear | clinkedin queue retry <id>
 
 | Operation | Default behavior |
 |---|---|
-| `connections`, `following`, `view`, `search` | Run without confirmation — read-only. |
+| `connections`, `following`, `view`, `feed`, `search` | Run without confirmation — read-only. |
 | `connect`, `disconnect`, `follow`, `unfollow` | **Ask the user first.** Show what will happen. Use `--dry-run` to preview when the user is unsure. |
 | `comment` | **Show the exact comment text and confirm.** Comments are public, notify the author, and have no API delete. Default to interactive (don't auto-pass `--yes`) unless the user explicitly authorized that exact text. |
 | `post` | **Show the exact body and image filename and confirm.** Posts are public, persistent, notify followers, and have no API delete. Default to interactive — strongly prefer the prompt over `--yes`. Visibility is hardcoded PUBLIC in v1. |
@@ -260,7 +359,7 @@ clinkedin queue remove <id> | clinkedin queue clear | clinkedin queue retry <id>
 - **`HTTP 400` on `following`, `follow`, `unfollow`, `comment`, or `message`** — usually means LinkedIn rotated the GraphQL `queryId` hash baked into the bundle (for `following`) or moved the SDUI / Voyager endpoint shape (for the others). All have hardcoded values that need re-capturing from a real LinkedIn web session via DevTools (Network tab → trigger the action → Copy as cURL → share). One commit usually fixes it.
 - **`HTTP 401` / "session may be rate-limited"** — stop, do not retry. The session is locked for 30 minutes to several hours. Tell the user to pause and try again later.
 - **`view --posts` returns empty after `--since`** — the user's posts may genuinely all be older than the window. Try a wider `--since` or omit it. If `--since 1y` is also empty, the user may have no posts visible to your session (1st-degree only / privacy settings).
-- **Debug flags** — `view --posts --debug` dumps the raw `/identity/profileUpdatesV2` response; `following --debug` dumps the raw GraphQL Curation Hub response. Use only when investigating an unexpected error; each invocation is one more Voyager call against a fragile session.
+- **Debug flags** — `view --posts --debug` dumps the raw `/identity/profileUpdatesV2` response (member profiles only; ignored for company URLs); `following --debug` dumps the raw GraphQL Curation Hub response. Use only when investigating an unexpected error; each invocation is one more Voyager call against a fragile session.
 
 ## Help
 

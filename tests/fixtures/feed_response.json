@@ -1,0 +1,134 @@
+{
+  "metadata": {
+    "paginationToken": "0000000-0000000000000-00000000000000000000000000000000",
+    "sort": "REV_CHRON",
+    "type": "feed"
+  },
+  "elements": [
+    {
+      "entityUrn": "urn:li:fs_updateV2:(urn:li:activity:7200000000000000001,MAIN_FEED,DEBUG_REASON,DEFAULT,false)",
+      "header": {
+        "text": {
+          "text": "Grace Hopper likes this"
+        }
+      },
+      "actor": {
+        "urn": "urn:li:member:1001",
+        "name": {
+          "text": "Ada Lovelace"
+        },
+        "description": {
+          "text": "Mathematician at Analytical Engine Co"
+        },
+        "subDescription": {
+          "text": "1h •   ",
+          "accessibilityText": "1 hour ago"
+        },
+        "navigationContext": {
+          "actionTarget": "https://www.linkedin.com/in/ada-lovelace?miniProfileUrn=urn%3Ali%3Afs_miniProfile%3AACoAAA"
+        }
+      },
+      "commentary": {
+        "text": {
+          "text": "Notes on the Analytical Engine are finally published.\nSecond line of the post."
+        }
+      },
+      "socialDetail": {
+        "totalSocialActivityCounts": {
+          "numLikes": 25,
+          "numComments": 2
+        }
+      },
+      "updateMetadata": {
+        "urn": "urn:li:activity:7200000000000000001",
+        "trackingData": {
+          "requestId": "req-1",
+          "trackingId": "trk-1"
+        }
+      }
+    },
+    {
+      "entityUrn": "urn:li:fs_updateV2:(urn:li:sponsoredContentV2:(urn:li:activity:7200000000000000002,urn:li:sponsoredCreative:1),MAIN_FEED,EMPTY,DEFAULT,true)",
+      "actor": {
+        "urn": "urn:li:member:1002",
+        "name": {
+          "text": "Acme Founder"
+        },
+        "description": {
+          "text": "Co-Founder & CEO of Acme"
+        },
+        "subDescription": {
+          "text": "Promoted by Acme",
+          "accessibilityText": "Promoted by Acme"
+        },
+        "navigationContext": {
+          "actionTarget": "https://www.linkedin.com/in/acme-founder?miniProfileUrn=urn%3Ali%3Afs_miniProfile%3AACoAAB"
+        }
+      },
+      "commentary": {
+        "text": {
+          "text": "Promoted: try our paid product today."
+        }
+      },
+      "socialDetail": {
+        "totalSocialActivityCounts": {
+          "numLikes": 1510,
+          "numComments": 137
+        }
+      },
+      "updateMetadata": {
+        "urn": "urn:li:activity:7200000000000000002",
+        "trackingData": {
+          "requestId": "req-1",
+          "sponsoredTracking": {
+            "adRequestId": "ad-1"
+          },
+          "trackingId": "trk-2"
+        }
+      }
+    },
+    {
+      "entityUrn": "urn:li:fs_updateV2:(urn:li:activity:7200000000000000003,MAIN_FEED,DEBUG_REASON,DEFAULT,false)",
+      "actor": {
+        "urn": "urn:li:company:1337420",
+        "name": {
+          "text": "Acme Corp"
+        },
+        "description": {
+          "text": "12,345 followers"
+        },
+        "subDescription": {
+          "text": "3d • Edited •   ",
+          "accessibilityText": "3 days ago"
+        },
+        "navigationContext": {
+          "actionTarget": "https://www.linkedin.com/company/acme/"
+        }
+      },
+      "commentary": {
+        "text": {
+          "text": "Our v2 platform is now generally available."
+        }
+      },
+      "socialDetail": {
+        "totalSocialActivityCounts": {
+          "numLikes": 128,
+          "numComments": 12
+        }
+      },
+      "updateMetadata": {
+        "urn": "urn:li:activity:7200000000000000003",
+        "trackingData": {
+          "requestId": "req-1",
+          "trackingId": "trk-3"
+        }
+      }
+    }
+  ],
+  "paging": {
+    "start": 0,
+    "count": 3,
+    "total": 507,
+    "links": []
+  }
+}

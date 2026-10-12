@@ -15,7 +15,15 @@ from .follow import (
     unfollow_company,
     unfollow_member,
 )
+from .inbox import InboxError, fetch_conversations, fetch_messages
 from .invite import InviteError, parse_profile_url, send_invite
+from .message import (
+    MAX_MESSAGE_LEN,
+    MessageError,
+    resolve_message_target,
+    send_message,
+    start_conversation,
+)
 
 mcp = FastMCP("clinkedin")
 
@@ -128,6 +136,95 @@ def linkedin_list_following(limit: int | None = None, offset: int = 0) -> dict:
     except FollowError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "results": results}
+
+
+@mcp.tool()
+def linkedin_list_conversations(limit: int = 20, unread_only: bool = False) -> dict:
+    """List the authenticated user's LinkedIn message conversations, most recent first.
+
+    Args:
+        limit: Max conversations to return (default 20; at most ~100 per call).
+        unread_only: Only return conversations with unread messages.
+
+    Returns:
+        {"ok": bool, "results": [{"thread_id", "url", "title", "participants",
+        "unread_count", "read", "last_activity_at", "last_sender",
+        "last_sender_is_me", "last_message"}], "error": str}.
+    """
+    try:
+        client = _get_client()
+    except NotAuthenticatedError as e:
+        return {"ok": False, "error": f"not authenticated: {e}"}
+    try:
+        results = fetch_conversations(client, limit=max(1, limit), unread_only=unread_only)
+    except (InboxError, InviteError) as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "results": results}
+
+
+@mcp.tool()
+def linkedin_read_conversation(target: str, limit: int = 20) -> dict:
+    """Read the most recent messages in a LinkedIn conversation, oldest first.
+
+    Args:
+        target: Thread URL (https://www.linkedin.com/messaging/thread/2-.../),
+            full urn:li:msg_conversation:(...) URN, or bare 2-... thread id.
+        limit: Max most-recent messages to return (default 20).
+
+    Returns:
+        {"ok": bool, "results": [{"sent_at", "sender", "sender_url", "text"}], "error": str}.
+    """
+    try:
+        client = _get_client()
+    except NotAuthenticatedError as e:
+        return {"ok": False, "error": f"not authenticated: {e}"}
+    try:
+        results = fetch_messages(client, target, limit=max(1, limit))
+    except ValueError as e:
+        return {"ok": False, "error": f"invalid target: {e}"}
+    except (InboxError, InviteError) as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "results": results}
+
+
+@mcp.tool()
+def linkedin_send_message(target: str, message: str) -> dict:
+    """Send a LinkedIn direct message.
+
+    Args:
+        target: A profile URL (https://www.linkedin.com/in/<slug>/) or
+            urn:li:fsd_profile:ACoA... to message a person — replies in the existing
+            thread with them, or starts a new conversation (1st-degree connections
+            only). Or a thread URL / urn:li:msg_conversation:(...) / bare 2-... id
+            to reply in that conversation.
+        message: Message text (max 8000 chars).
+
+    Returns:
+        {"ok": bool, "thread_id": str, "new_conversation": bool, "error": str}.
+    """
+    text = (message or "").rstrip()
+    if not text:
+        return {"ok": False, "error": "message is empty"}
+    if len(text) > MAX_MESSAGE_LEN:
+        return {"ok": False, "error": f"message too long ({len(text)}/{MAX_MESSAGE_LEN})"}
+    try:
+        client = _get_client()
+    except NotAuthenticatedError as e:
+        return {"ok": False, "error": f"not authenticated: {e}"}
+    try:
+        dest = resolve_message_target(client, target)
+    except ValueError as e:
+        return {"ok": False, "error": f"invalid target: {e}"}
+    except (InboxError, InviteError) as e:
+        return {"ok": False, "error": str(e)}
+    try:
+        if dest["thread_id"]:
+            send_message(client, dest["mailbox_urn"], dest["thread_id"], text)
+            return {"ok": True, "thread_id": dest["thread_id"], "new_conversation": False}
+        thread_id = start_conversation(client, dest["mailbox_urn"], dest["recipient_urn"], text)
+    except MessageError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "thread_id": thread_id, "new_conversation": True}
 
 
 def main() -> None:
